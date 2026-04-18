@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secure Vault - Register</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+</head>
+<body class="auth-page">
+    <div class="auth-shell">
+        <div class="auth-card">
+            <div class="auth-brand">
+                <div class="logo">SV</div>
+                <h1>Create Account</h1>
+                <p>Register for Secure Vault and protect your files with encryption.</p>
+            </div>
+            <form action="{{ url_for('register') }}" method="post" class="auth-form">
+                <label>Username</label>
+                <input type="text" name="username" placeholder="Choose a username" required />
+                <label>Email</label>
+                <input type="email" name="email" placeholder="Enter your email" required />
+                <label>Password</label>
+                <input type="password" name="password" placeholder="Create a password" required />
+                <label>Confirm Password</label>
+                <input type="password" name="confirm_password" placeholder="Confirm password" required />
+                <button type="submit" class="btn-primary">Create Account</button>
+            </form>
+            <p class="auth-footer">
+                Already registered? <a href="{{ url_for('login') }}">Sign in</a>
+            </p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secure Vault</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo">SV</div>
+                <div>
+                    <h1>Secure Vault</h1>
+                    <p>Secure file & note manager</p>
+                </div>
+            </div>
+            <nav class="nav-menu">
+                <a href="{{ url_for('dashboard') }}" class="nav-link {% if not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active %}active{% endif %}">Profile</a>
+                <a href="{{ url_for('documents') }}" class="nav-link {% if documents_active %}active{% endif %}">My Documents</a>
+                <a href="{{ url_for('secure_shares') }}" class="nav-link {% if secure_shares_active %}active{% endif %}">Secure Shares</a>
+                <a href="{{ url_for('activity_logs') }}" class="nav-link {% if activity_active %}active{% endif %}">Activity Logs</a>
+                <a href="{{ url_for('trust_dashboard') }}" class="nav-link {% if trust_dashboard_active %}active{% endif %}">Trust Dashboard</a>
+                <a href="{{ url_for('vault_settings') }}" class="nav-link {% if vault_settings_active %}active{% endif %}">Vault Settings</a>
+            </nav>
+            <div class="sidebar-footer">
+                <span>Logged in as</span>
+                <strong>{{ user.username }}</strong>
+                <a href="{{ url_for('logout') }}" class="btn-logout">Logout</a>
+            </div>
+        </aside>
+
+        <main class="content-area">
+            <header class="topbar">
+                <div>
+                    <h2>Welcome back, {{ user.name or user.username }}</h2>
+                    <p class="subtitle">Secure Vault dashboard and security center.</p>
+                </div>
+                <div class="trust-panel" id="trust-panel">
+                    <span>Trust Score:</span>
+                    <strong id="trustScore">--</strong>
+                    <span id="trustLabel">Monitoring...</span>
+                    <button id="testAnomalyBtn" style="margin-left: 1rem; background: var(--danger); color: #0d1117; border: none; border-radius: 8px; padding: 0.5rem 1rem; cursor: pointer;">Test Anomaly</button>
+                </div>
+            </header>
+
+            <section class="page-content">
+                {% if profile_active or (not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active) %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Profile</h3>
+                        <span>Manage your account and security settings.</span>
+                    </div>
+                    <div class="grid-two">
+                        <div class="card summary-card">
+                            <div class="profile-meta">
+                                <div class="avatar">{{ user.username[0]|upper }}</div>
+                                <div>
+                                    <h4>{{ user.name or user.username }}</h4>
+                                    <p>{{ user.email }}</p>
+                                </div>
+                            </div>
+                            <div class="stats-row">
+                                <div>
+                                    <span>Total files</span>
+                                    <strong>{{ total_files }}</strong>
+                                </div>
+                                <div>
+                                    <span>Total notes</span>
+                                    <strong>{{ total_notes }}</strong>
+                                </div>
+                            </div>
+                            <div class="recent-logs-card">
+                                <h4>Recent Activity</h4>
+                                {% if recent_logs %}
+                                <ul>
+                                    {% for log in recent_logs %}
+                                    <li><strong>{{ log.action }}</strong> — {{ log.details }} <span>{{ log.timestamp }}</span></li>
+                                    {% endfor %}
+                                </ul>
+                                {% else %}
+                                <p class="empty-state">No recent activity yet.</p>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="card form-card">
+                            <form action="{{ url_for('profile') }}" method="post" enctype="multipart/form-data">
+                                <label>Name</label>
+                                <input type="text" name="name" value="{{ user.name }}" placeholder="Full name" />
+                                <label>Email</label>
+                                <input type="email" name="email" value="{{ user.email }}" placeholder="Email address" />
+                                <label>Profile Picture</label>
+                                <input type="file" name="profile_picture" accept="image/*" />
+                                <button type="submit" class="btn-primary">Update Profile</button>
+                            </form>
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if documents_active %}
+                <div class="panel">
+                    <div class="section-header space-between">
+                        <div>
+                            <h3>Documents</h3>
+                            <span>Encrypted uploads, search, and downloads.</span>
+                        </div>
+                        <form class="search-form" action="{{ url_for('documents') }}" method="get">
+                            <input type="text" name="search" value="{{ search }}" placeholder="Search files or tags" />
+                            <button type="submit">Search</button>
+                        </form>
+                    </div>
+                    <div class="card upload-card">
+                        <form action="{{ url_for('documents') }}" method="post" enctype="multipart/form-data">
+                            <label>Upload File</label>
+                            <input type="file" name="file" />
+                            <label>Tags (comma separated)</label>
+                            <input type="text" name="tags" placeholder="confidential, report" />
+                            <button type="submit" class="btn-primary">Upload Securely</button>
+                        </form>
+                    </div>
+                    <div class="card table-card">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th></th>
+                                    <th>Filename</th>
+                                    <th>Tags</th>
+                                    <th>Uploaded</th>
+                                    <th>Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% if documents %}
+                                    {% for file in documents %}
+                                    <tr>
+                                        <td><input type="checkbox" /></td>
+                                        <td>{{ file.filename }}</td>
+                                        <td>{{ file.tags or '—' }}</td>
+                                        <td>{{ file.uploaded_at }}</td>
+                                        <td class="actions">
+                                            <button class="btn-secondary" disabled>Preview</button>
+                                            <a href="{{ url_for('download', file_id=file.id) }}" class="btn-secondary">Download</a>
+                                            <form action="{{ url_for('delete_file', file_id=file.id) }}" method="post" class="inline-form">
+                                                <button type="submit" class="btn-danger">Delete</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr><td colspan="5" class="empty-state">No files found. Upload a secure file to get started.</td></tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if secure_shares_active %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Secure Shares</h3>
+                        <span>Share files securely with other users.</span>
+                    </div>
+                    <div class="card form-card">
+                        <label>Share file with another user</label>
+                        <input type="text" placeholder="Recipient username" />
+                        <input type="text" placeholder="File identifier or tag" />
+                        <button class="btn-primary">Share</button>
+                    </div>
+                    <div class="tabs">
+                        <button class="tab active">Shared With Me</button>
+                        <button class="tab">Shared By Me</button>
+                    </div>
+                    <div class="card placeholder-card">
+                        <p>This placeholder area will display shared items and invitations.</p>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if activity_active %}
+                <div class="panel">
+                    <div class="section-header space-between">
+                        <div>
+                            <h3>Activity Logs</h3>
+                            <span>Review recent security and usage events with advanced filtering.</span>
+                        </div>
+                        <a href="{{ url_for('activity_logs', export='csv') }}" class="btn-secondary">Export CSV</a>
+                    </div>
+                    
+                    <!-- Filters -->
+                    <div class="filters-section" style="margin-bottom: 2rem; padding: 1rem; background: var(--bg-secondary); border-radius: 8px;">
+                        <form method="GET" style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
+                            <div>
+                                <label for="type">Action Type:</label>
+                                <select name="type" id="type">
+                                    <option value="">All Actions</option>
+                                    <option value="login" {% if request.args.get('type') == 'login' %}selected{% endif %}>Login</option>
+                                    <option value="logout" {% if request.args.get('type') == 'logout' %}selected{% endif %}>Logout</option>
+                                    <option value="file_upload" {% if request.args.get('type') == 'file_upload' %}selected{% endif %}>File Upload</option>
+                                    <option value="file_download" {% if request.args.get('type') == 'file_download' %}selected{% endif %}>File Download</option>
+                                    <option value="behavior_normal" {% if request.args.get('type') == 'behavior_normal' %}selected{% endif %}>Normal Behavior</option>
+                                    <option value="anomaly_detected" {% if request.args.get('type') == 'anomaly_detected' %}selected{% endif %}>Anomaly Detected</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label for="search">Search Details:</label>
+                                <input type="text" name="search" id="search" value="{{ request.args.get('search', '') }}" placeholder="Search in details...">
+                            </div>
+                            <div>
+                                <label for="start_date">Start Date:</label>
+                                <input type="date" name="start_date" id="start_date" value="{{ request.args.get('start_date', '') }}">
+                            </div>
+                            <div>
+                                <label for="end_date">End Date:</label>
+                                <input type="date" name="end_date" id="end_date" value="{{ request.args.get('end_date', '') }}">
+                            </div>
+                            <button type="submit" class="btn-primary">Filter</button>
+                            <a href="{{ url_for('activity_logs') }}" class="btn-secondary">Clear</a>
+                        </form>
+                    </div>
+
+                    <!-- Charts -->
+                    <div class="charts-section" style="margin-bottom: 2rem;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
+                            <div class="card">
+                                <h4>Actions Breakdown</h4>
+                                <canvas id="actionsChart" width="400" height="200"></canvas>
+                            </div>
+                            <div class="card">
+                                <h4>Daily Activity</h4>
+                                <canvas id="dailyChart" width="400" height="200"></canvas>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card table-card">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>Action</th>
+                                    <th>Details</th>
+                                    <th>Trust Score</th>
+                                    <th>Timestamp</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% if logs %}
+                                    {% for log in logs %}
+                                    <tr>
+                                        <td>{{ log.action }}</td>
+                                        <td>{{ log.details }}</td>
+                                        <td>{% if log.trust_score is not none %}{{ log.trust_score }}{% else %}-{% endif %}</td>
+                                        <td>{{ log.timestamp }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                {% else %}
+                                    <tr><td colspan="4" class="empty-state">No activity logs available.</td></tr>
+                                {% endif %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if trust_dashboard_active %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Trust Score Dashboard</h3>
+                        <span>Monitor your trust score history over time.</span>
+                    </div>
+                    <div class="card">
+                        <h4>Trust Score Trend (Last 30 Days)</h4>
+                        <canvas id="trustScoreChart" width="800" height="300"></canvas>
+                    </div>
+                    <div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 2rem;">
+                        {% if trust_scores %}
+                            {% set scores = trust_scores | map(attribute='trust_score') | select %}
+                            {% if scores %}
+                                {% set avg_score = scores | list | average %}
+                                {% set min_score = scores | min %}
+                                {% set max_score = scores | max %}
+                                <div class="stat-card">
+                                    <h5>Average Trust Score</h5>
+                                    <div class="stat-value">{{ "%.1f"|format(avg_score) }}</div>
+                                </div>
+                                <div class="stat-card">
+                                    <h5>Highest Score</h5>
+                                    <div class="stat-value">{{ max_score }}</div>
+                                </div>
+                                <div class="stat-card">
+                                    <h5>Lowest Score</h5>
+                                    <div class="stat-value">{{ min_score }}</div>
+                                </div>
+                                <div class="stat-card">
+                                    <h5>Total Readings</h5>
+                                    <div class="stat-value">{{ trust_scores | length }}</div>
+                                </div>
+                            {% endif %}
+                        {% else %}
+                            <div class="stat-card">
+                                <h5>No Data</h5>
+                                <div class="stat-value">N/A</div>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if vault_settings_active %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Vault Settings</h3>
+                        <span>Update security options and account protection.</span>
+                    </div>
+                    <div class="grid-two">
+                        <div class="card settings-card">
+                            <h4>Two-Factor Authentication</h4>
+                            <p>Enable an extra verification step when signing in.</p>
+                            <button class="btn-secondary">Toggle 2FA (placeholder)</button>
+                        </div>
+                        <div class="card settings-card">
+                            <h4>Security Questions</h4>
+                            <p>Add recovery questions for your vault.</p>
+                            <button class="btn-secondary">Add Questions</button>
+                        </div>
+                    </div>
+                    <div class="card form-card">
+                        <form action="{{ url_for('vault_settings') }}" method="post">
+                            <label>Change Password</label>
+                            <input type="password" placeholder="Current password" />
+                            <input type="password" placeholder="New password" />
+                            <input type="password" placeholder="Confirm new password" />
+                            <button class="btn-primary">Update Password</button>
+                        </form>
+                    </div>
+                    <div class="card log-card">
+                        <h4>Recent Login History</h4>
+                        <ul>
+                            <li>Session started 12 minutes ago</li>
+                            <li>Secure page accessed 2 minutes ago</li>
+                            <li>Upload activity 20 minutes ago</li>
+                        </ul>
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if notes_active %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Secure Notes</h3>
+                        <span>Create encrypted notes and store them securely.</span>
+                    </div>
+                    <div class="card form-card">
+                        <form action="{{ url_for('notes') }}" method="post">
+                            <textarea name="note_text" placeholder="Write your secure note here..."></textarea>
+                            <button type="submit" class="btn-primary">Save Note</button>
+                        </form>
+                    </div>
+                    <div class="card notes-card">
+                        {% if notes %}
+                            {% for note in notes %}
+                            <div class="note-item">
+                                <p>{{ note.content }}</p>
+                                <span>{{ note.created_at }}</span>
+                            </div>
+                            {% endfor %}
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+
+                {% if vault_settings_active %}
+                <div class="panel">
+                    <div class="section-header">
+                        <h3>Vault Settings</h3>
+                        <span>Update security options and account protection.</span>
+                    </div>
+                    <div class="grid-two">
+                        <div class="card settings-card">
+                            <h4>Two-Factor Authentication</h4>
+                            <p>Enable an extra verification step when signing in.</p>
+                            {% if user.twofa_secret %}
+                            <p>2FA is enabled.</p>
+                            <form method="post" style="display: inline;">
+                                <input type="hidden" name="action" value="toggle_2fa">
+                                <button type="submit" class="btn-secondary">Disable 2FA</button>
+                            </form>
+                            {% else %}
+                            <form method="post" style="display: inline;">
+                                <input type="hidden" name="action" value="toggle_2fa">
+                                <button type="submit" class="btn-secondary">Enable 2FA</button>
+                            </form>
+                            {% endif %}
+                            {% if qr_uri %}
+                            <p>Scan this QR code with your authenticator app:</p>
+                            <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={{ qr_uri }}" alt="2FA QR Code" />
+                            {% endif %}
+                        </div>
+                        <div class="card settings-card">
+                            <h4>IP Restrictions</h4>
+                            <p>Restrict logins to specific IP addresses (comma-separated).</p>
+                            <form method="post">
+                                <input type="hidden" name="action" value="update_ips">
+                                <input type="text" name="allowed_ips" value="{{ user.allowed_ips }}" placeholder="e.g., 192.168.1.1, 10.0.0.1" />
+                                <button type="submit" class="btn-secondary">Update IPs</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="card form-card">
+                        <form action="{{ url_for('vault_settings') }}" method="post">
+                            <input type="hidden" name="action" value="change_password">
+                            <label>Change Password</label>
+                            <input type="password" name="current_password" placeholder="Current password" required />
+                            <input type="password" name="new_password" placeholder="New password" required />
+                            <input type="password" name="confirm_password" placeholder="Confirm new password" required />
+                            <button type="submit" class="btn-primary">Update Password</button>
+                        </form>
+                    </div>
+                    <div class="card log-card">
+                        <h4>Recent Login History</h4>
+                        <ul>
+                            <li>Session started 12 minutes ago</li>
+                            <li>Secure page accessed 2 minutes ago</li>
+                            <li>Upload activity 20 minutes ago</li>
+                        </ul>
+                    </div>
+                </div>
+                {% endif %}
+            </section>
+        </main>
+    </div>
+
+<script src="{{ url_for('static', filename='js/behaviour.js') }}"></script>
+    
+    <script>
+        // Activity Logs Charts
+        {% if activity_active and chart_data %}
+        const actionsData = {{ chart_data.actions | tojson }};
+        const dailyData = {{ chart_data.daily | tojson }};
+        
+        // Actions Chart
+        const actionsCtx = document.getElementById('actionsChart').getContext('2d');
+        new Chart(actionsCtx, {
+            type: 'pie',
+            data: {
+                labels: actionsData.map(item => item.action),
+                datasets: [{
+                    data: actionsData.map(item => item.count),
+                    backgroundColor: [
+                        '#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#ff9f40'
+                    ]
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: {
+                        position: 'bottom',
+                    }
+                }
+            }
+        });
+        
+        // Daily Activity Chart
+        const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+        new Chart(dailyCtx, {
+            type: 'line',
+            data: {
+                labels: dailyData.map(item => item.date),
+                datasets: [{
+                    label: 'Activity Count',
+                    data: dailyData.map(item => item.count),
+                    borderColor: '#36a2eb',
+                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                    tension: 0.1
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+        {% endif %}
+        
+        // Trust Score Chart
+        {% if trust_dashboard_active and trust_scores %}
+        const trustScores = {{ trust_scores | tojson }};
+        const trustCtx = document.getElementById('trustScoreChart').getContext('2d');
+        new Chart(trustCtx, {
+            type: 'line',
+            data: {
+                labels: trustScores.map(item => new Date(item.timestamp).toLocaleDateString()),
+                datasets: [{
+                    label: 'Trust Score',
+                    data: trustScores.map(item => item.trust_score),
+                    borderColor: '#4bc0c0',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    tension: 0.1,
+                    pointBackgroundColor: trustScores.map(item => {
+                        const score = item.trust_score;
+                        if (score >= 80) return '#4bc0c0';
+                        if (score >= 60) return '#ffce56';
+                        return '#ff6384';
+                    })
+                }]
+            },
+            options: {
+                responsive: true,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100
+                    }
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    }
+                }
+            }
+        });
+        {% endif %}
+    </script>
+</body>
+</html>
