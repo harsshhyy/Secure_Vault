@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Verify Login - Secure Vault</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <style>
+        .risk-badge {
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .risk-high { background: #ffebee; color: #c62828; }
+        .risk-medium { background: #fff3e0; color: #e65100; }
+        .risk-low { background: #e8f5e9; color: #2e7d32; }
+        .risk-factors {
+            background: #f5f5f5;
+            border-left: 4px solid #ff9800;
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+        .risk-factors h4 { margin: 0 0 10px 0; }
+        .risk-factors ul { margin: 0; padding-left: 20px; }
+        .risk-factors li { margin: 5px 0; font-size: 0.9em; }
+        .info-box {
+            background: #e3f2fd;
+            border-left: 4px solid #1976d2;
+            padding: 12px;
+            margin: 15px 0;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body class="auth-page">
+    <div class="auth-shell">
+        <div class="auth-card">
+            <div class="auth-brand">
+                <div class="logo">SV</div>
+                <h1>Security Verification Required</h1>
+                <p>Your login triggered additional security checks.</p>
+            </div>
+
+            <div class="risk-badge risk-medium">
+                🔒 Medium Risk Login (Score: {{ risk_score }}/100)
+            </div>
+
+            {% if risk_factors %}
+            <div class="risk-factors">
+                <h4>Risk Factors Detected:</h4>
+                <ul>
+                    {% if risk_factors.get('new_device') %}
+                    <li>✓ New device detected</li>
+                    {% endif %}
+                    {% if risk_factors.get('new_location') %}
+                    <li>✓ Different IP address/location</li>
+                    {% endif %}
+                    {% if risk_factors.get('unusual_time') %}
+                    <li>✓ Unusual login time</li>
+                    {% endif %}
+                    {% if risk_factors.get('failed_attempts') %}
+                    <li>✓ Recent failed login attempts</li>
+                    {% endif %}
+                    {% if risk_factors.get('anomalous_behavior') %}
+                    <li>✓ Recent suspicious behavior detected</li>
+                    {% endif %}
+                </ul>
+            </div>
+            {% endif %}
+
+            <div class="info-box">
+                <strong>Enhanced Security:</strong> To complete your login, please verify your identity with a one-time password from your authenticator app.
+            </div>
+
+            {% with messages = get_flashed_messages(category_filter=['danger']) %}
+            {% if messages %}
+            <div style="background: #ffebee; color: #c62828; padding: 10px; border-radius: 4px; margin: 10px 0;">
+                {% for message in messages %}
+                <p style="margin: 5px 0;">⚠ {{ message }}</p>
+                {% endfor %}
+            </div>
+            {% endif %}
+            {% endwith %}
+
+            <form action="{{ url_for('verify_otp_login') }}" method="post" class="auth-form">
+                <label>One-Time Password (OTP)</label>
+                <input 
+                    type="text" 
+                    name="otp_code" 
+                    placeholder="Enter 6-digit code" 
+                    maxlength="6"
+                    pattern="[0-9]{6}"
+                    required 
+                    autofocus 
+                    inputmode="numeric"
+                />
+                <p style="font-size: 0.9em; color: #666; margin-top: 10px;">
+                    Enter the 6-digit code from your authenticator app (Google Authenticator, Microsoft Authenticator, Authy, etc.)
+                </p>
+                <button type="submit" class="btn-primary">Verify & Login</button>
+            </form>
+
+            <p class="auth-footer">
+                <a href="{{ url_for('login') }}">← Back to Login</a>
+            </p>
+
+            <div style="background: #f5f5f5; padding: 12px; border-radius: 4px; margin-top: 20px; font-size: 0.85em; color: #666;">
+                <strong>Security Note:</strong>
+                <ul style="margin: 10px 0; padding-left: 20px;">
+                    <li>This OTP is required because we detected unusual login activity</li>
+                    <li>Your risk level will decrease after confirming this login</li>
+                    <li>Consider marking this device as trusted for future logins</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Auto-submit when 6 digits are entered
+        document.querySelector('input[name="otp_code"]').addEventListener('input', function(e) {
+            if (this.value.length === 6 && /^\d{6}$/.test(this.value)) {
+                // Optional: auto-submit
+                // this.form.submit();
+            }
+        });
+    </script>
+</body>
+</html>

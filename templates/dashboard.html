@@ -276,73 +276,29 @@
                         <canvas id="trustScoreChart" width="800" height="300"></canvas>
                     </div>
                     <div class="stats-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-top: 2rem;">
-                        {% if trust_scores %}
-                            {% set scores = trust_scores | map(attribute='trust_score') | select %}
-                            {% if scores %}
-                                {% set avg_score = scores | list | average %}
-                                {% set min_score = scores | min %}
-                                {% set max_score = scores | max %}
-                                <div class="stat-card">
-                                    <h5>Average Trust Score</h5>
-                                    <div class="stat-value">{{ "%.1f"|format(avg_score) }}</div>
-                                </div>
-                                <div class="stat-card">
-                                    <h5>Highest Score</h5>
-                                    <div class="stat-value">{{ max_score }}</div>
-                                </div>
-                                <div class="stat-card">
-                                    <h5>Lowest Score</h5>
-                                    <div class="stat-value">{{ min_score }}</div>
-                                </div>
-                                <div class="stat-card">
-                                    <h5>Total Readings</h5>
-                                    <div class="stat-value">{{ trust_scores | length }}</div>
-                                </div>
-                            {% endif %}
+                        {% if trust_stats and (trust_stats.avg_score is not none or trust_stats.total_readings > 0) %}
+                            <div class="stat-card">
+                                <h5>Average Trust Score</h5>
+                                <div class="stat-value">{{ "%.1f"|format(trust_stats.avg_score) if trust_stats.avg_score is not none else "N/A" }}</div>
+                            </div>
+                            <div class="stat-card">
+                                <h5>Highest Score</h5>
+                                <div class="stat-value">{{ trust_stats.max_score if trust_stats.max_score is not none else "N/A" }}</div>
+                            </div>
+                            <div class="stat-card">
+                                <h5>Lowest Score</h5>
+                                <div class="stat-value">{{ trust_stats.min_score if trust_stats.min_score is not none else "N/A" }}</div>
+                            </div>
+                            <div class="stat-card">
+                                <h5>Total Readings</h5>
+                                <div class="stat-value">{{ trust_stats.total_readings }}</div>
+                            </div>
                         {% else %}
                             <div class="stat-card">
                                 <h5>No Data</h5>
                                 <div class="stat-value">N/A</div>
                             </div>
                         {% endif %}
-                    </div>
-                </div>
-                {% endif %}
-
-                {% if vault_settings_active %}
-                <div class="panel">
-                    <div class="section-header">
-                        <h3>Vault Settings</h3>
-                        <span>Update security options and account protection.</span>
-                    </div>
-                    <div class="grid-two">
-                        <div class="card settings-card">
-                            <h4>Two-Factor Authentication</h4>
-                            <p>Enable an extra verification step when signing in.</p>
-                            <button class="btn-secondary">Toggle 2FA (placeholder)</button>
-                        </div>
-                        <div class="card settings-card">
-                            <h4>Security Questions</h4>
-                            <p>Add recovery questions for your vault.</p>
-                            <button class="btn-secondary">Add Questions</button>
-                        </div>
-                    </div>
-                    <div class="card form-card">
-                        <form action="{{ url_for('vault_settings') }}" method="post">
-                            <label>Change Password</label>
-                            <input type="password" placeholder="Current password" />
-                            <input type="password" placeholder="New password" />
-                            <input type="password" placeholder="Confirm new password" />
-                            <button class="btn-primary">Update Password</button>
-                        </form>
-                    </div>
-                    <div class="card log-card">
-                        <h4>Recent Login History</h4>
-                        <ul>
-                            <li>Session started 12 minutes ago</li>
-                            <li>Secure page accessed 2 minutes ago</li>
-                            <li>Upload activity 20 minutes ago</li>
-                        </ul>
                     </div>
                 </div>
                 {% endif %}
@@ -433,100 +389,132 @@
         </main>
     </div>
 
+{% if activity_active and chart_data %}
+<script type="application/json" id="activityChartData">
+{{ chart_data | tojson }}
+</script>
+{% endif %}
+
+{% if trust_dashboard_active and trust_scores %}
+<script type="application/json" id="trustScoreData">
+{{ trust_scores | tojson }}
+</script>
+{% endif %}
+
 <script src="{{ url_for('static', filename='js/behaviour.js') }}"></script>
-    
-    <script>
-        // Activity Logs Charts
-        {% if activity_active and chart_data %}
-        const actionsData = {{ chart_data.actions | tojson }};
-        const dailyData = {{ chart_data.daily | tojson }};
-        
-        // Actions Chart
-        const actionsCtx = document.getElementById('actionsChart').getContext('2d');
-        new Chart(actionsCtx, {
-            type: 'pie',
-            data: {
-                labels: actionsData.map(item => item.action),
-                datasets: [{
-                    data: actionsData.map(item => item.count),
-                    backgroundColor: [
-                        '#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#ff9f40'
-                    ]
-                }]
-            },
-            options: {
-                responsive: true,
-                plugins: {
-                    legend: {
-                        position: 'bottom',
-                    }
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Load activity chart data
+        const activityDataEl = document.getElementById('activityChartData');
+        if (activityDataEl) {
+            try {
+                const activityChartData = JSON.parse(activityDataEl.textContent);
+                const actionsData = activityChartData.actions;
+                const dailyData = activityChartData.daily;
+                
+                // Actions Chart
+                const actionsCtx = document.getElementById('actionsChart');
+                if (actionsCtx) {
+                    new Chart(actionsCtx.getContext('2d'), {
+                        type: 'pie',
+                        data: {
+                            labels: actionsData.map(item => item.action),
+                            datasets: [{
+                                data: actionsData.map(item => item.count),
+                                backgroundColor: [
+                                    '#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#ff9f40'
+                                ]
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: {
+                                    position: 'bottom',
+                                }
+                            }
+                        }
+                    });
                 }
-            }
-        });
-        
-        // Daily Activity Chart
-        const dailyCtx = document.getElementById('dailyChart').getContext('2d');
-        new Chart(dailyCtx, {
-            type: 'line',
-            data: {
-                labels: dailyData.map(item => item.date),
-                datasets: [{
-                    label: 'Activity Count',
-                    data: dailyData.map(item => item.count),
-                    borderColor: '#36a2eb',
-                    backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: true
-                    }
+                
+                // Daily Activity Chart
+                const dailyCtx = document.getElementById('dailyChart');
+                if (dailyCtx) {
+                    new Chart(dailyCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: dailyData.map(item => item.date),
+                            datasets: [{
+                                label: 'Activity Count',
+                                data: dailyData.map(item => item.count),
+                                borderColor: '#36a2eb',
+                                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                                tension: 0.1
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                y: {
+                                    beginAtZero: true
+                                }
+                            }
+                        }
+                    });
                 }
+            } catch (e) {
+                console.error('Failed to parse activity chart data:', e);
             }
-        });
-        {% endif %}
+        }
         
-        // Trust Score Chart
-        {% if trust_dashboard_active and trust_scores %}
-        const trustScores = {{ trust_scores | tojson }};
-        const trustCtx = document.getElementById('trustScoreChart').getContext('2d');
-        new Chart(trustCtx, {
-            type: 'line',
-            data: {
-                labels: trustScores.map(item => new Date(item.timestamp).toLocaleDateString()),
-                datasets: [{
-                    label: 'Trust Score',
-                    data: trustScores.map(item => item.trust_score),
-                    borderColor: '#4bc0c0',
-                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                    tension: 0.1,
-                    pointBackgroundColor: trustScores.map(item => {
-                        const score = item.trust_score;
-                        if (score >= 80) return '#4bc0c0';
-                        if (score >= 60) return '#ffce56';
-                        return '#ff6384';
-                    })
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        max: 100
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: false
-                    }
+        // Load trust score chart data
+        const trustDataEl = document.getElementById('trustScoreData');
+        if (trustDataEl) {
+            try {
+                const trustScoreData = JSON.parse(trustDataEl.textContent);
+                
+                const trustCtx = document.getElementById('trustScoreChart');
+                if (trustCtx) {
+                    new Chart(trustCtx.getContext('2d'), {
+                        type: 'line',
+                        data: {
+                            labels: trustScoreData.map(item => new Date(item.timestamp).toLocaleDateString()),
+                            datasets: [{
+                                label: 'Trust Score',
+                                data: trustScoreData.map(item => item.trust_score),
+                                borderColor: '#4bc0c0',
+                                backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                                tension: 0.1,
+                                pointBackgroundColor: trustScoreData.map(item => {
+                                    const score = item.trust_score;
+                                    if (score >= 80) return '#4bc0c0';
+                                    if (score >= 60) return '#ffce56';
+                                    return '#ff6384';
+                                })
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                y: {
+                                    beginAtZero: true,
+                                    max: 100
+                                }
+                            },
+                            plugins: {
+                                legend: {
+                                    display: false
+                                }
+                            }
+                        }
+                    });
                 }
+            } catch (e) {
+                console.error('Failed to parse trust score data:', e);
             }
-        });
-        {% endif %}
-    </script>
+        }
+    });
+</script>
 </body>
 </html>

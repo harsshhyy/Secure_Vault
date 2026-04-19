@@ -2,11 +2,13 @@ import os
 import sqlite3
 import csv
 import io
+import json
 import secrets
 from datetime import datetime, timedelta
 from functools import wraps
 
 from sklearn.ensemble import IsolationForest
+from sklearn.preprocessing import StandardScaler
 import numpy as np
 import pyotp
 from flask_mail import Mail, Message
@@ -65,8 +67,28 @@ def load_or_create_key(path: str) -> bytes:
 FERNET_KEY = load_or_create_key(FERNET_KEY_PATH)
 fernet = Fernet(FERNET_KEY)
 
-# Global dict to store trained models per user
+# Global dict to store trained models and scalers per user
 user_models = {}
+user_scalers = {}
+
+# ML Configuration Constants
+MIN_SAMPLES_FOR_TRAINING = 20
+ANOMALY_THRESHOLD = -0.5  # Isolation Forest anomaly score threshold
+CONTAMINATION_RATE = 0.1  # Percentage of anomalies expected in normal operation
+
+# Risk-Based Adaptive Authentication Constants
+RISK_LOW_THRESHOLD = 30      # Risk score < 30 = Low risk (normal auth)
+RISK_MEDIUM_THRESHOLD = 70   # Risk score 30-70 = Medium risk (OTP required)
+RISK_HIGH_THRESHOLD = 100    # Risk score > 70 = High risk (block + alert)
+
+# Risk factor weights
+RISK_WEIGHTS = {
+    'new_device': 25,           # New device fingerprint
+    'new_location': 20,         # Different IP/location
+    'unusual_time': 10,         # Login outside usual hours
+    'failed_attempts': 15,      # Recent failed login attempts
+    'anomalous_behavior': 30,   # Anomalous user behavior detected
+}
 
 
 def get_db():
@@ -146,17 +168,67 @@ def init_db():
             user_id INTEGER NOT NULL,
             action TEXT NOT NULL,
             details TEXT,
+            features TEXT,
             trust_score INTEGER,
+            anomaly_score REAL,
+            is_anomaly INTEGER DEFAULT 0,
             timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
         '''
     )
-    # Add trust_score column if it doesn't exist
+    # Add missing columns if they don't exist
     try:
-        cursor.execute('ALTER TABLE behavior_logs ADD COLUMN trust_score INTEGER')
+        cursor.execute('ALTER TABLE behavior_logs ADD COLUMN features TEXT')
     except sqlite3.OperationalError:
-        pass  # Column already exists
+        pass
+    try:
+        cursor.execute('ALTER TABLE behavior_logs ADD COLUMN anomaly_score REAL')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE behavior_logs ADD COLUMN is_anomaly INTEGER DEFAULT 0')
+    except sqlite3.OperationalError:
+        pass
+    
+    # Create login_attempts table for risk tracking
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS login_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            ip_address TEXT,
+            device_fingerprint TEXT,
+            risk_score INTEGER,
+            risk_level TEXT,
+            factors TEXT,
+            success INTEGER DEFAULT 0,
+            otp_verified INTEGER DEFAULT 0,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        )
+        '''
+    )
+    
+    # Add columns to users table for device tracking
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN last_login_ip TEXT')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN trusted_devices TEXT')  # JSON array of fingerprints
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN last_successful_login TEXT')
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute('ALTER TABLE users ADD COLUMN twofa_secret TEXT')
+    except sqlite3.OperationalError:
+        pass
+    
     conn.commit()
     conn.close()
 
@@ -191,7 +263,8 @@ def allowed_file(filename):
 def get_current_user():
     if 'user_id' not in session:
         return None
-    return query_db('SELECT * FROM users WHERE id = ?', [session['user_id']], one=True)
+    user_row = query_db('SELECT * FROM users WHERE id = ?', [session['user_id']], one=True)
+    return dict(user_row) if user_row else None
 
 
 def login_required(f):
@@ -214,10 +287,14 @@ def verify_2fa(secret, token):
 
 
 def is_account_locked(user):
-    if user['lockout_until']:
-        lockout_time = datetime.fromisoformat(user['lockout_until'])
-        if datetime.utcnow() < lockout_time:
-            return True
+    lockout_until = user.get('lockout_until') if isinstance(user, dict) else None
+    if lockout_until:
+        try:
+            lockout_time = datetime.fromisoformat(lockout_until)
+            if datetime.utcnow() < lockout_time:
+                return True
+        except (ValueError, TypeError):
+            pass
     return False
 
 
@@ -231,9 +308,10 @@ def reset_failed_attempts(user_id):
 
 
 def check_ip_allowed(user, client_ip):
-    if not user['allowed_ips']:
+    allowed_ips = user.get('allowed_ips') if isinstance(user, dict) else None
+    if not allowed_ips:
         return True  # No restrictions
-    allowed = user['allowed_ips'].split(',')
+    allowed = allowed_ips.split(',')
     return client_ip in allowed
 
 
@@ -243,69 +321,233 @@ def send_reset_email(email, token):
     mail.send(msg)
 
 
-def send_anomaly_alert(email, username):
+def send_anomaly_alert(email, username, details=''):
+    """Send an email alert when anomalous behavior is detected."""
+    detail_msg = f'\nDetails: {details}\n' if details else ''
     msg = Message('Security Alert: Anomaly Detected', recipients=[email])
-    msg.body = f'Dear {username},\n\nAn anomalous behavior has been detected in your Secure Vault account. For security reasons, you have been automatically logged out.\n\nIf this was not you, please change your password immediately and review your account settings.\n\nSecure Vault Security Team'
+    msg.body = f'''Dear {username},
+
+An anomalous behavior has been detected in your Secure Vault account. For security reasons, you have been automatically logged out.
+{detail_msg}
+If this was not you, please:
+1. Change your password immediately
+2. Review your recent account activity
+3. Check connected devices and sessions
+
+Secure Vault Security Team'''
     try:
         mail.send(msg)
+        print(f"[EMAIL] Anomaly alert sent to {email}")
     except Exception as e:
-        print(f"Failed to send anomaly alert: {e}")
+        print(f"[ERROR] Failed to send anomaly alert to {email}: {e}")
 
 
 def train_user_model(user_id):
     """Train Isolation Forest model for a user using their behavior logs."""
-    logs = query_db('SELECT details FROM behavior_logs WHERE user_id = ? AND action = "behavior_normal"', [user_id])
+    # Get all behavioral logs with features for this user (last 500 records)
+    logs = query_db(
+        'SELECT features FROM behavior_logs WHERE user_id = ? AND features IS NOT NULL ORDER BY timestamp DESC LIMIT 500',
+        [user_id]
+    )
+    
+    if len(logs) < MIN_SAMPLES_FOR_TRAINING:
+        print(f"[ML] Not enough data to train model for user {user_id}. Have {len(logs)}, need {MIN_SAMPLES_FOR_TRAINING}")
+        return None
+    
     features = []
     for log in logs:
-        # Extract feature vector from details (assuming format like 'trust_score=85')
-        details = log['details']
-        if 'score=' in details:
-            # For now, since we have limited data, use synthetic or fallback
-            # In real app, parse actual vectors from logs
-            continue  # Placeholder: need to store vectors properly
-    if len(features) < 10:  # Need minimum data
+        try:
+            feature_vector = json.loads(log['features'])
+            if isinstance(feature_vector, list) and len(feature_vector) >= 5:
+                features.append(feature_vector[:5])
+        except (json.JSONDecodeError, TypeError, IndexError):
+            continue
+    
+    if len(features) < MIN_SAMPLES_FOR_TRAINING:
+        print(f"[ML] Not enough valid features for user {user_id}. Have {len(features)} valid samples")
         return None
-    model = IsolationForest(contamination=0.1, random_state=42)
-    model.fit(np.array(features))
+    
+    features_array = np.array(features)
+    
+    # Standardize features using StandardScaler
+    scaler = StandardScaler()
+    scaled_features = scaler.fit_transform(features_array)
+    user_scalers[user_id] = scaler
+    
+    # Train Isolation Forest with optimized parameters
+    model = IsolationForest(
+        contamination=CONTAMINATION_RATE,
+        random_state=42,
+        n_estimators=100,
+        max_samples='auto',
+        n_jobs=-1
+    )
+    model.fit(scaled_features)
     user_models[user_id] = model
+    
+    print(f"[ML] Successfully trained model for user {user_id} with {len(features)} samples")
     return model
 
 
 def compute_trust_score(feature_vector):
-    """Compute trust score from feature vector (fallback for rule-based detection)."""
-    if len(feature_vector) != 6:
+    """Compute trust score from feature vector (rule-based fallback)."""
+    if not feature_vector or len(feature_vector) < 5:
         return 50  # Default medium score
     
-    typing_speed, key_delay, mouse_speed, click_rate, scroll_velocity, session_time = feature_vector
+    typing_speed, key_delay, mouse_speed, click_rate, scroll_velocity = feature_vector[:5]
     
     score = 100
+    
+    # Penalize unusual typing patterns
     score -= min(max((typing_speed - 8) * 4, 0), 25)
+    # Penalize unusual key delay patterns
     score -= min(max((key_delay - 0.3) * 16, 0), 20)
+    # Penalize unusual mouse speed
     score -= min(max((mouse_speed - 400) / 30, 0), 20)
+    # Penalize unusual click rate
     score -= min(max((click_rate - 2.5) * 10, 0), 15)
+    # Penalize unusual scroll velocity
     score -= min(max((scroll_velocity - 500) / 50, 0), 10)
-    score -= min(max((session_time - 600) / 60, 0), 10)
     
     return max(0, min(100, int(score)))
 
 
 def detect_anomaly_ml(user_id, feature_vector):
-    """Use ML model to detect anomaly, fallback to rules."""
+    """Detect anomalies using ML model.
+    Returns: (is_anomaly: bool, trust_score: int, method: str)
+    """
+    if not feature_vector or len(feature_vector) < 5:
+        return False, 50, 'invalid'
+    
+    # Try to get trained model
     model = user_models.get(user_id)
+    scaler = user_scalers.get(user_id)
+    
     if model is None:
         model = train_user_model(user_id)
-    if model:
-        prediction = model.predict([feature_vector])[0]
-        return prediction == -1  # -1 is outlier
-    # Fallback to rule-based
+        scaler = user_scalers.get(user_id)
+    
+    if model and scaler:
+        try:
+            # Normalize to 5 features
+            feature_vector = feature_vector[:5]
+            scaled_features = scaler.transform([feature_vector])
+            
+            # Get anomaly score (-1 to 1, lower is more anomalous)
+            anomaly_score = model.score_samples(scaled_features)[0]
+            is_anomaly = anomaly_score < ANOMALY_THRESHOLD
+            
+            # Convert to 0-100 scale for display (anomaly_score + 1) * 50
+            trust_score = max(0, min(100, int((anomaly_score + 1) * 50)))
+            
+            print(f"[ML] User {user_id}: anomaly_score={anomaly_score:.2f}, trust_score={trust_score}, is_anomaly={is_anomaly}")
+            return is_anomaly, trust_score, 'isolation_forest'
+        except Exception as e:
+            print(f"[ML] Error in ML detection for user {user_id}: {e}")
+    
+    # Fallback to rule-based scoring
     score = compute_trust_score(feature_vector)
-    return score <= 20
+    is_anomaly = score <= 30
+    print(f"[FALLBACK] User {user_id}: trust_score={score}, is_anomaly={is_anomaly}")
+    return is_anomaly, score, 'rule_based'
 
 
-def record_behavior(user_id, action, details='', trust_score=None):
+def calculate_login_risk(user_id, ip_address, device_fingerprint=None):
+    """Calculate risk score for a login attempt.
+    Returns: (risk_score: int, risk_level: str, risk_factors: dict)
+    """
+    risk_score = 0
+    risk_factors = {}
+    
+    user_row = query_db('SELECT * FROM users WHERE id = ?', [user_id], one=True)
+    user = dict(user_row) if user_row else {}
+    if not user:
+        return 100, 'high', {'error': 'User not found'}
+    
+    # 1. Check for new device/fingerprint
+    if device_fingerprint:
+        trusted_devices = []
+        if user.get('trusted_devices'):
+            try:
+                trusted_devices = json.loads(user.get('trusted_devices', '[]'))
+            except:
+                trusted_devices = []
+        
+        if device_fingerprint not in trusted_devices:
+            risk_score += RISK_WEIGHTS['new_device']
+            risk_factors['new_device'] = RISK_WEIGHTS['new_device']
+    
+    # 2. Check for new IP/location
+    last_ip = user.get('last_login_ip')
+    if last_ip and last_ip != ip_address:
+        risk_score += RISK_WEIGHTS['new_location']
+        risk_factors['new_location'] = RISK_WEIGHTS['new_location']
+    
+    # 3. Check for unusual login time
+    current_hour = datetime.utcnow().hour
+    # Simple check: if last login was in different timezone region (very simple)
+    last_login_str = user.get('last_successful_login')
+    if last_login_str:
+        try:
+            last_login = datetime.fromisoformat(last_login_str)
+            time_diff = abs(current_hour - last_login.hour)
+            # Penalize logins that are very different in time
+            if time_diff > 8:
+                risk_score += RISK_WEIGHTS['unusual_time']
+                risk_factors['unusual_time'] = RISK_WEIGHTS['unusual_time']
+        except:
+            pass
+    
+    # 4. Check for recent failed login attempts
+    recent_failures_row = query_db(
+        'SELECT COUNT(*) as count FROM login_attempts WHERE user_id = ? AND success = 0 AND timestamp > datetime("now", "-30 minutes")',
+        [user_id],
+        one=True
+    )
+    recent_failures = dict(recent_failures_row) if recent_failures_row else {}
+    if recent_failures and recent_failures.get('count', 0) > 2:
+        risk_score += RISK_WEIGHTS['failed_attempts']
+        risk_factors['failed_attempts'] = RISK_WEIGHTS['failed_attempts']
+    
+    # 5. Check for anomalous behavior (from behavior logs)
+    recent_anomalies_row = query_db(
+        'SELECT COUNT(*) as count FROM behavior_logs WHERE user_id = ? AND is_anomaly = 1 AND timestamp > datetime("now", "-2 hours")',
+        [user_id],
+        one=True
+    )
+    recent_anomalies = dict(recent_anomalies_row) if recent_anomalies_row else {}
+    if recent_anomalies and recent_anomalies.get('count', 0) > 0:
+        risk_score += RISK_WEIGHTS['anomalous_behavior']
+        risk_factors['anomalous_behavior'] = RISK_WEIGHTS['anomalous_behavior']
+    
+    # Determine risk level
+    if risk_score < RISK_LOW_THRESHOLD:
+        risk_level = 'low'
+    elif risk_score < RISK_MEDIUM_THRESHOLD:
+        risk_level = 'medium'
+    else:
+        risk_level = 'high'
+    
+    print(f"[RISK] User {user_id}: risk_score={risk_score}, risk_level={risk_level}, factors={risk_factors}")
+    return risk_score, risk_level, risk_factors
+
+
+def record_login_attempt(user_id, username, ip_address, risk_score, risk_level, risk_factors, success=False, otp_verified=False):
+    """Record a login attempt with risk information."""
+    factors_json = json.dumps(risk_factors)
     execute_db(
-        'INSERT INTO behavior_logs (user_id, action, details, trust_score, timestamp) VALUES (?, ?, ?, ?, ?)',
-        [user_id, action, details, trust_score, datetime.utcnow().isoformat()],
+        'INSERT INTO login_attempts (user_id, username, ip_address, risk_score, risk_level, factors, success, otp_verified, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [user_id, username, ip_address, risk_score, risk_level, factors_json, int(success), int(otp_verified), datetime.utcnow().isoformat()],
+    )
+
+
+def record_behavior(user_id, action, details='', trust_score=None, feature_vector=None, is_anomaly=0, anomaly_score=None):
+    """Record user behavior with optional feature vector for ML training."""
+    features_json = json.dumps(feature_vector) if feature_vector else None
+    
+    execute_db(
+        'INSERT INTO behavior_logs (user_id, action, details, features, trust_score, anomaly_score, is_anomaly, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [user_id, action, details, features_json, trust_score, anomaly_score, is_anomaly, datetime.utcnow().isoformat()],
     )
 
 
@@ -338,8 +580,8 @@ def register():
             return redirect(url_for('register'))
 
         password_hash = hash_password(password)
-        twofa_secret = generate_2fa_secret()
-        execute_db('INSERT INTO users (username, email, password, twofa_secret) VALUES (?, ?, ?, ?)', [username, email, password_hash, twofa_secret])
+        # 2FA is optional - not auto-generated during registration
+        execute_db('INSERT INTO users (username, email, password, twofa_secret) VALUES (?, ?, ?, ?)', [username, email, password_hash, None])
         flash('Account created successfully. Please log in.', 'success')
         return redirect(url_for('login'))
 
@@ -351,21 +593,201 @@ def login():
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         password = request.form.get('password', '')
+        device_fingerprint = request.form.get('deviceFingerprint', '')
 
-        user = query_db('SELECT * FROM users WHERE username = ?', [username], one=True)
-        if not user or not verify_password(password, user['password']):
+        # Step 1: Verify credentials
+        user_row = query_db('SELECT * FROM users WHERE username = ?', [username], one=True)
+        user = dict(user_row) if user_row else {}
+        
+        if not user or not verify_password(password, user.get('password', '')):
             flash('Invalid username or password.', 'danger')
             return redirect(url_for('login'))
 
-        session.clear()
-        session['user_id'] = user['id']
-        session['username'] = user['username']
-        session.permanent = True
-        session['login_time'] = datetime.utcnow().timestamp()
-        record_behavior(user['id'], 'login', 'User logged in successfully')
-        return redirect(url_for('dashboard'))
+        # Step 2: Calculate login risk
+        ip_address = request.remote_addr
+        risk_score, risk_level, risk_factors = calculate_login_risk(user.get('id'), ip_address, device_fingerprint)
+
+        print(f"[LOGIN] User {username}: risk_score={risk_score}, risk_level={risk_level}")
+
+        # Step 3: Handle based on risk level
+        if risk_level == 'high':
+            # HIGH RISK: Block login and send alert
+            print(f"[ALERT] High-risk login attempt for user {username} (score: {risk_score})")
+            record_login_attempt(user.get('id'), username, ip_address, risk_score, risk_level, risk_factors, success=False)
+            
+            # Send security alert email
+            try:
+                msg = Message('Security Alert: Blocked Login Attempt', recipients=[user.get('email', '')])
+                msg.body = f'''Dear {user.get('username', 'User')},
+
+A login attempt to your Secure Vault account was blocked due to unusual activity.
+
+Risk Factors:
+{chr(10).join([f"  - {k}: {v}" for k, v in risk_factors.items()])}
+
+If this was you:
+1. Please try again later
+2. Contact support if you need immediate access
+
+If this was NOT you:
+1. Change your password immediately
+2. Review your account security settings
+3. Contact support
+
+Secure Vault Security Team'''
+                mail.send(msg)
+                print(f"[EMAIL] Security alert sent to {user.get('email', '')}")
+            except Exception as e:
+                print(f"[ERROR] Failed to send alert email: {e}")
+            
+            flash('Login blocked due to unusual activity. Please try again later.', 'danger')
+            return redirect(url_for('login'))
+
+        elif risk_level == 'medium':
+            # MEDIUM RISK: Require OTP verification
+            print(f"[OTP_REQUIRED] Medium-risk login for user {username} (score: {risk_score})")
+            
+            # Generate temporary session to store login state
+            temp_token = secrets.token_urlsafe(32)
+            session['temp_login'] = {
+                'user_id': user.get('id'),
+                'username': username,
+                'ip_address': ip_address,
+                'device_fingerprint': device_fingerprint,
+                'risk_score': risk_score,
+                'risk_level': risk_level,
+                'risk_factors': risk_factors,
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            
+            record_login_attempt(user.get('id'), username, ip_address, risk_score, risk_level, risk_factors, success=False, otp_verified=False)
+            
+            flash(f'Medium-risk login detected (Score: {risk_score}/100). OTP required.', 'warning')
+            return redirect(url_for('verify_otp_login'))
+
+        else:
+            # LOW RISK: Normal login
+            print(f"[LOGIN_SUCCESS] Low-risk login for user {username} (score: {risk_score})")
+            
+            session.clear()
+            session['user_id'] = user.get('id')
+            session['username'] = user.get('username', '')
+            session.permanent = True
+            session['login_time'] = datetime.utcnow().timestamp()
+            session['risk_level'] = 'low'
+            session['risk_score'] = risk_score
+            
+            # Update user's device tracking
+            if device_fingerprint:
+                trusted_devices = []
+                if user.get('trusted_devices'):
+                    try:
+                        trusted_devices = json.loads(user['trusted_devices'])
+                    except:
+                        trusted_devices = []
+                if device_fingerprint not in trusted_devices:
+                    trusted_devices.append(device_fingerprint)
+                execute_db('UPDATE users SET trusted_devices = ? WHERE id = ?', [json.dumps(trusted_devices[:10]), user.get('id')])  # Keep last 10 devices
+            
+            # Update last login info
+            execute_db('UPDATE users SET last_login_ip = ?, last_successful_login = ? WHERE id = ?', 
+                      [ip_address, datetime.utcnow().isoformat(), user.get('id')])
+            
+            record_login_attempt(user.get('id'), username, ip_address, risk_score, risk_level, risk_factors, success=True)
+            record_behavior(user.get('id'), 'login', f'User logged in successfully (risk_level={risk_level}, score={risk_score})')
+            
+            return redirect(url_for('dashboard'))
 
     return render_template('login.html')
+
+
+@app.route('/verify_otp_login', methods=['GET', 'POST'])
+def verify_otp_login():
+    """Verify OTP for medium-risk login attempts."""
+    if 'temp_login' not in session:
+        flash('Session expired. Please login again.', 'danger')
+        return redirect(url_for('login'))
+    
+    temp_login = session['temp_login']
+    user_id = temp_login['user_id']
+    user_row = query_db('SELECT * FROM users WHERE id = ?', [user_id], one=True)
+    user = dict(user_row) if user_row else {}
+    
+    # If 2FA not configured, allow login to proceed anyway (medium-risk check is sufficient)
+    if not user:
+        flash('User not found.', 'danger')
+        session.pop('temp_login', None)
+        return redirect(url_for('login'))
+    
+    if not user.get('twofa_secret'):
+        # 2FA not configured - grant access after medium-risk detection
+        session.clear()
+        session['user_id'] = user_id
+        session['username'] = user.get('username', '')
+        session.permanent = True
+        session['login_time'] = datetime.utcnow().timestamp()
+        session['risk_level'] = temp_login['risk_level']
+        session['risk_score'] = temp_login['risk_score']
+        
+        # Update last login
+        execute_db('UPDATE users SET last_login_ip = ?, last_successful_login = ? WHERE id = ?', 
+                  [temp_login['ip_address'], datetime.utcnow().isoformat(), user_id])
+        
+        # Record successful login
+        execute_db('INSERT INTO login_attempts (user_id, ip_address, success, timestamp) VALUES (?, ?, ?, ?)',
+                  [user_id, temp_login['ip_address'], 1, datetime.utcnow().isoformat()])
+        
+        flash('Login successful. 2FA not configured on your account.', 'info')
+        return redirect(url_for('dashboard'))
+    
+    if request.method == 'POST':
+        otp_code = request.form.get('otp_code', '').strip()
+        
+        try:
+            totp = pyotp.TOTP(user.get('twofa_secret'))
+            if not totp.verify(otp_code):
+                flash('Invalid OTP code. Please try again.', 'danger')
+                return redirect(url_for('verify_otp_login'))
+            
+            # OTP verified - grant access
+            session.clear()
+            session['user_id'] = user_id
+            session['username'] = user.get('username', '')
+            session.permanent = True
+            session['login_time'] = datetime.utcnow().timestamp()
+            session['risk_level'] = temp_login['risk_level']
+            session['risk_score'] = temp_login['risk_score']
+            
+            # Update trusted devices and last login
+            if temp_login['device_fingerprint']:
+                trusted_devices = []
+                if user.get('trusted_devices'):
+                    try:
+                        trusted_devices = json.loads(user['trusted_devices'])
+                    except:
+                        trusted_devices = []
+                if temp_login['device_fingerprint'] not in trusted_devices:
+                    trusted_devices.append(temp_login['device_fingerprint'])
+                execute_db('UPDATE users SET trusted_devices = ? WHERE id = ?', [json.dumps(trusted_devices[:10]), user_id])
+            
+            execute_db('UPDATE users SET last_login_ip = ?, last_successful_login = ? WHERE id = ?', 
+                      [temp_login['ip_address'], datetime.utcnow().isoformat(), user_id])
+            
+            # Record successful login
+            record_login_attempt(user_id, user.get('username', ''), temp_login['ip_address'], 
+                               temp_login['risk_score'], temp_login['risk_level'], 
+                               temp_login['risk_factors'], success=True, otp_verified=True)
+            record_behavior(user_id, 'login', f'User logged in successfully via OTP (risk_level={temp_login["risk_level"]}, score={temp_login["risk_score"]})')
+            
+            flash('Login successful!', 'success')
+            return redirect(url_for('dashboard'))
+            
+        except Exception as e:
+            print(f"[ERROR] OTP verification failed: {e}")
+            flash('OTP verification failed. Please try again.', 'danger')
+            return redirect(url_for('verify_otp_login'))
+    
+    return render_template('verify_otp_login.html', risk_score=temp_login['risk_score'], risk_factors=temp_login['risk_factors'])
 
 
 @app.route('/logout')
@@ -380,8 +802,10 @@ def logout():
 @login_required
 def dashboard():
     user = get_current_user()
-    total_files = query_db('SELECT COUNT(*) AS count FROM files WHERE user_id = ?', [user['id']], one=True)['count']
-    total_notes = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)['count']
+    total_files_row = query_db('SELECT COUNT(*) AS count FROM files WHERE user_id = ?', [user['id']], one=True)
+    total_files = dict(total_files_row)['count'] if total_files_row else 0
+    total_notes_row = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)
+    total_notes = dict(total_notes_row)['count'] if total_notes_row else 0
     recent_logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
 
     return render_template(
@@ -413,8 +837,10 @@ def profile():
         flash('Profile updated successfully.', 'success')
         return redirect(url_for('profile'))
 
-    total_files = query_db('SELECT COUNT(*) AS count FROM files WHERE user_id = ?', [user['id']], one=True)['count']
-    total_notes = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)['count']
+    total_files_row = query_db('SELECT COUNT(*) AS count FROM files WHERE user_id = ?', [user['id']], one=True)
+    total_files = dict(total_files_row)['count'] if total_files_row else 0
+    total_notes_row = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)
+    total_notes = dict(total_notes_row)['count'] if total_notes_row else 0
     recent_logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
     return render_template('dashboard.html', user=user, profile_active=True, total_files=total_files, total_notes=total_notes, recent_logs=recent_logs)
 
@@ -461,7 +887,8 @@ def documents():
 @login_required
 def download(file_id):
     user = get_current_user()
-    file_record = query_db('SELECT * FROM files WHERE id = ? AND user_id = ?', [file_id, user['id']], one=True)
+    file_record_row = query_db('SELECT * FROM files WHERE id = ? AND user_id = ?', [file_id, user['id']], one=True)
+    file_record = dict(file_record_row) if file_record_row else None
     if not file_record:
         flash('File not found.', 'danger')
         return redirect(url_for('documents'))
@@ -487,7 +914,8 @@ def download(file_id):
 @login_required
 def delete_file(file_id):
     user = get_current_user()
-    file_record = query_db('SELECT * FROM files WHERE id = ? AND user_id = ?', [file_id, user['id']], one=True)
+    file_record_row = query_db('SELECT * FROM files WHERE id = ? AND user_id = ?', [file_id, user['id']], one=True)
+    file_record = dict(file_record_row) if file_record_row else None
     if not file_record:
         flash('File not found.', 'danger')
         return redirect(url_for('documents'))
@@ -606,52 +1034,73 @@ def trust_dashboard():
     user = get_current_user()
     # Get trust score history for the last 30 days
     thirty_days_ago = (datetime.utcnow() - timedelta(days=30)).isoformat()
-    trust_scores = query_db(
+    trust_scores_rows = query_db(
         'SELECT trust_score, timestamp FROM behavior_logs WHERE user_id = ? AND trust_score IS NOT NULL AND timestamp >= ? ORDER BY timestamp ASC',
         [user['id'], thirty_days_ago]
     )
-    return render_template('dashboard.html', user=user, trust_scores=trust_scores, trust_dashboard_active=True)
+    
+    # Convert Row objects to dictionaries for JSON serialization
+    trust_scores = [dict(row) for row in trust_scores_rows] if trust_scores_rows else []
+    
+    # Calculate statistics
+    trust_stats = {
+        'avg_score': None,
+        'min_score': None,
+        'max_score': None,
+        'total_readings': len(trust_scores)
+    }
+    
+    if trust_scores:
+        scores = [log['trust_score'] for log in trust_scores]
+        trust_stats['avg_score'] = sum(scores) / len(scores)
+        trust_stats['min_score'] = min(scores)
+        trust_stats['max_score'] = max(scores)
+    
+    return render_template('dashboard.html', user=user, trust_scores=trust_scores, trust_stats=trust_stats, trust_dashboard_active=True)
 
 
 @app.route('/vault_settings', methods=['GET', 'POST'])
 @login_required
 def vault_settings():
     user = get_current_user()
+    # Convert Row to dict for safe access
+    user_dict = dict(user) if user else {}
+    
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'toggle_2fa':
-            if user['twofa_secret']:
-                execute_db('UPDATE users SET twofa_secret = NULL WHERE id = ?', [user['id']])
+            if user_dict.get('twofa_secret'):
+                execute_db('UPDATE users SET twofa_secret = NULL WHERE id = ?', [user_dict['id']])
                 flash('2FA disabled.', 'success')
             else:
                 secret = generate_2fa_secret()
-                execute_db('UPDATE users SET twofa_secret = ? WHERE id = ?', [secret, user['id']])
+                execute_db('UPDATE users SET twofa_secret = ? WHERE id = ?', [secret, user_dict['id']])
                 flash('2FA enabled. Scan the QR code below.', 'success')
         elif action == 'update_ips':
             allowed_ips = request.form.get('allowed_ips', '').strip()
-            execute_db('UPDATE users SET allowed_ips = ? WHERE id = ?', [allowed_ips, user['id']])
+            execute_db('UPDATE users SET allowed_ips = ? WHERE id = ?', [allowed_ips, user_dict['id']])
             flash('IP restrictions updated.', 'success')
         elif action == 'change_password':
             current = request.form.get('current_password')
             new_pass = request.form.get('new_password')
             confirm = request.form.get('confirm_password')
-            if not verify_password(current, user['password']):
+            if not verify_password(current, user_dict.get('password')):
                 flash('Current password incorrect.', 'danger')
             elif new_pass != confirm:
                 flash('New passwords do not match.', 'danger')
             else:
-                execute_db('UPDATE users SET password = ? WHERE id = ?', [hash_password(new_pass), user['id']])
+                execute_db('UPDATE users SET password = ? WHERE id = ?', [hash_password(new_pass), user_dict['id']])
                 flash('Password changed.', 'success')
-        record_behavior(user['id'], 'update_vault_settings', f'Action: {action}')
+        record_behavior(user_dict['id'], 'update_vault_settings', f'Action: {action}')
         return redirect(url_for('vault_settings'))
 
     # Generate QR code URI for 2FA
     qr_uri = None
-    if user['twofa_secret']:
-        totp = pyotp.TOTP(user['twofa_secret'])
-        qr_uri = totp.provisioning_uri(name=user['email'], issuer_name='Secure Vault')
+    if user_dict.get('twofa_secret'):
+        totp = pyotp.TOTP(user_dict['twofa_secret'])
+        qr_uri = totp.provisioning_uri(name=user_dict.get('email', ''), issuer_name='Secure Vault')
 
-    return render_template('dashboard.html', user=user, vault_settings_active=True, qr_uri=qr_uri)
+    return render_template('dashboard.html', user=user_dict, vault_settings_active=True, qr_uri=qr_uri)
 
 
 @app.route('/log_behavior', methods=['POST', 'GET'])
@@ -662,49 +1111,88 @@ def log_behavior():
         payload = request.get_json(force=True, silent=True) or {}
         action = payload.get('action', 'unknown')
         details = payload.get('details', '')
-        trust_score = payload.get('trustScore')
         feature_vector = payload.get('featureVector', [])
 
-        score = None
-        if isinstance(feature_vector, list) and len(feature_vector) == 5:
-            is_anomaly = detect_anomaly_ml(user['id'], feature_vector)
-            if is_anomaly:
-                record_behavior(user['id'], 'anomaly_detected', f'trust_score=anomaly_ml', 0)
-                # Send anomaly alert email
-                send_anomaly_alert(user['email'], user['username'])
+        # Initialize response
+        trust_score = 50
+        anomaly_detected = False
+        detection_method = 'none'
+
+        # If we have a feature vector, perform ML anomaly detection
+        if isinstance(feature_vector, list) and len(feature_vector) >= 5:
+            is_anomaly, score, method = detect_anomaly_ml(user['id'], feature_vector)
+            trust_score = int(score)
+            detection_method = method
+            anomaly_detected = is_anomaly
+            
+            print(f"[ANOMALY DETECTION] User {user['username']}: anomaly={anomaly_detected}, score={trust_score}, method={method}")
+            
+            # Record this behavior with ML results
+            record_behavior(
+                user['id'],
+                'behavior_analysis',
+                f'action={action} method={method}',
+                trust_score=trust_score,
+                feature_vector=feature_vector,
+                is_anomaly=1 if anomaly_detected else 0,
+                anomaly_score=score
+            )
+            
+            # If anomaly detected, send alert and force logout
+            if anomaly_detected:
+                record_behavior(
+                    user['id'],
+                    'anomaly_detected',
+                    f'Suspicious behavior detected via {method}. Score: {trust_score}',
+                    trust_score=0,
+                    is_anomaly=1,
+                    anomaly_score=score
+                )
+                print(f"[ALERT] Anomaly detected for user {user['username']} (score: {trust_score}, method: {method})")
+                send_anomaly_alert(
+                    user['email'],
+                    user['username'],
+                    f"Anomalous behavior detected: {method} (Trust score: {trust_score}/100)"
+                )
                 session.clear()
-                return jsonify({'status': 'logout', 'trustScore': 0}), 401
-            record_behavior(user['id'], 'behavior_normal', f'trust_score=normal_ml', 100)
+                return jsonify({
+                    'status': 'logout',
+                    'trustScore': 0,
+                    'anomaly': True,
+                    'method': method,
+                    'message': 'Anomalous behavior detected. Session terminated for security.'
+                }), 401
         else:
-            score = trust_score if isinstance(trust_score, int) else None
+            # No feature vector, just record the action
+            record_behavior(user['id'], action, details, trust_score=trust_score)
+        
+        return jsonify({
+            'status': 'ok',
+            'trustScore': trust_score,
+            'anomaly': anomaly_detected,
+            'method': detection_method
+        })
 
-        log_details = details
-        if score is not None:
-            log_details = f'{details} score={score}'.strip()
-        record_behavior(user['id'], action, log_details, score)
-        return jsonify({'status': 'ok', 'trustScore': score})
-
-    logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50', [user['id']])
-    return jsonify([dict(log) for log in logs])
-    if request.method == 'POST':
-        email = request.form.get('email', '').strip().lower()
-        user = query_db('SELECT * FROM users WHERE email = ?', [email], one=True)
-        if user:
-            token = secrets.token_urlsafe(32)
-            expires = datetime.utcnow() + timedelta(hours=1)
-            execute_db('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', [token, expires.isoformat(), user['id']])
-            send_reset_email(email, token)
-            flash('Password reset email sent.', 'success')
-        else:
-            flash('Email not found.', 'warning')
-        return redirect(url_for('login'))
-    return render_template('forgot_password.html')
+    # GET request: return behavior logs with parsed features
+    logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100', [user['id']])
+    logs_list = []
+    for log in logs:
+        log_dict = dict(log)
+        # Parse features if present
+        if log_dict.get('features'):
+            try:
+                log_dict['features'] = json.loads(log_dict['features'])
+            except:
+                pass
+        logs_list.append(log_dict)
+    return jsonify(logs_list)
 
 
 @app.route('/reset_password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
-    user = query_db('SELECT * FROM users WHERE reset_token = ?', [token], one=True)
-    if not user or not user['reset_expires'] or datetime.utcnow() > datetime.fromisoformat(user['reset_expires']):
+    user_row = query_db('SELECT * FROM users WHERE reset_token = ?', [token], one=True)
+    user = dict(user_row) if user_row else None
+    if not user or not user.get('reset_expires') or datetime.utcnow() > datetime.fromisoformat(user.get('reset_expires', '')):
         flash('Invalid or expired token.', 'danger')
         return redirect(url_for('login'))
 
@@ -714,7 +1202,7 @@ def reset_password(token):
         if password != confirm:
             flash('Passwords do not match.', 'warning')
         else:
-            execute_db('UPDATE users SET password = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?', [hash_password(password), user['id']])
+            execute_db('UPDATE users SET password = ?, reset_token = NULL, reset_expires = NULL WHERE id = ?', [hash_password(password), user.get('id')])
             flash('Password reset successfully.', 'success')
             return redirect(url_for('login'))
     return render_template('reset_password.html')
@@ -724,11 +1212,12 @@ def reset_password(token):
 def forgot_password():
     if request.method == 'POST':
         email = request.form.get('email', '').strip().lower()
-        user = query_db('SELECT * FROM users WHERE email = ?', [email], one=True)
+        user_row = query_db('SELECT * FROM users WHERE email = ?', [email], one=True)
+        user = dict(user_row) if user_row else None
         if user:
             token = secrets.token_urlsafe(32)
             expires = datetime.utcnow() + timedelta(hours=1)
-            execute_db('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', [token, expires.isoformat(), user['id']])
+            execute_db('UPDATE users SET reset_token = ?, reset_expires = ? WHERE id = ?', [token, expires.isoformat(), user.get('id')])
             send_reset_email(email, token)
             flash('Password reset email sent.', 'success')
         else:
