@@ -11,20 +11,31 @@
         <div class="auth-card">
             <div class="auth-brand">
                 <div class="logo">SV</div>
-                <h1>Create Account</h1>
-                <p>Register for Secure Vault and protect your files with encryption.</p>
+                <h1>Create Secure Vault Account</h1>
+                <p>Register for adaptive encryption, behavior-based protection, and secure sharing.</p>
             </div>
             <form action="{{ url_for('register') }}" method="post" class="auth-form">
-                <label>Username</label>
-                <input type="text" name="username" placeholder="Choose a username" required />
-                <label>Email</label>
-                <input type="email" name="email" placeholder="Enter your email" required />
-                <label>Password</label>
-                <input type="password" name="password" placeholder="Create a password" required />
-                <label>Confirm Password</label>
-                <input type="password" name="confirm_password" placeholder="Confirm password" required />
+                <div class="input-group">
+                    <label>Username</label>
+                    <input type="text" name="username" placeholder="Choose a username" required />
+                </div>
+                <div class="input-group">
+                    <label>Email</label>
+                    <input type="email" name="email" placeholder="Enter your email" required />
+                </div>
+                <div class="input-group">
+                    <label>Password</label>
+                    <input type="password" name="password" placeholder="Create a password" required />
+                </div>
+                <div class="input-group">
+                    <label>Confirm Password</label>
+                    <input type="password" name="confirm_password" placeholder="Confirm password" required />
+                </div>
                 <button type="submit" class="btn-primary">Create Account</button>
             </form>
+            <div class="form-note">
+                <p>By creating your account, you agree to adaptive security monitoring and advanced login protection.</p>
+            </div>
             <p class="auth-footer">
                 Already registered? <a href="{{ url_for('login') }}">Sign in</a>
             </p>

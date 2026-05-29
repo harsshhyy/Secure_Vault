@@ -261,6 +261,44 @@
             return;
         }
 
+        // First ask server for session risk based on latest metrics
+        try {
+            fetch('/session_risk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    featureVector: [
+                        metrics.details.typingSpeed,
+                        metrics.details.keyDelay || 0,
+                        metrics.details.mouseSpeed,
+                        metrics.details.clickRate,
+                        metrics.details.scrollVelocity,
+                    ]
+                }),
+                credentials: 'same-origin',
+            })
+                .then((res) => res.json())
+                .then((data) => {
+                    if (data && data.riskScore !== undefined) {
+                        // reflect server risk in UI
+                        const score = data.riskScore;
+                        const level = data.riskLevel || '';
+                        updateTrustDisplay(score, level.toUpperCase());
+                        // Optionally show explanation in console or on page
+                        if (data.explanation && data.explanation.length) {
+                            console.log('[RISK EXPLAIN]', data.explanation.join('; '));
+                            const explEl = document.getElementById('riskExplanation');
+                            if (explEl) explEl.textContent = data.explanation.join(' | ');
+                        }
+                    }
+                })
+                .catch(() => {
+                    /* ignore */
+                });
+        } catch (e) {
+            // ignore
+        }
+
         sendBehaviorLog('heartbeat', 'Periodic behavior heartbeat', metrics);
         setTimeout(scheduleReport, CHECK_INTERVAL);
     }

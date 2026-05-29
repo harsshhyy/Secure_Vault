@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Secure Vault - Decoy Vault</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="dashboard-page">
+    <div class="app-shell">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="logo">SV</div>
+                <div>
+                    <h1>Secure Vault</h1>
+                    <p>Deception operations</p>
+                </div>
+            </div>
+        </aside>
+
+        <main class="content-area">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">Honeypot</p>
+                    <h2>Decoy Vault</h2>
+                    <p class="subtitle">Realistic fake environment for monitoring suspicious intruders.</p>
+                </div>
+                <div class="topbar-actions">
+                    <div class="mini-card">
+                        <span>Status</span>
+                        <strong>Active</strong>
+                    </div>
+                    <div class="mini-card">
+                        <span>Monitoring</span>
+                        <strong>Live</strong>
+                    </div>
+                </div>
+            </header>
+
+            <section class="page-content">
+                <div class="overview-grid">
+                    <div class="overview-card">
+                        <div class="metric-title">
+                            <span>Deception Mode</span>
+                            <span class="security-pill high">Honeypot</span>
+                        </div>
+                        <div class="metric-value">Suspicious</div>
+                        <p class="metric-note">This environment is designed to capture and analyze attacker behavior.</p>
+                    </div>
+                    <div class="overview-card">
+                        <div class="metric-title">
+                            <span>Fake Files</span>
+                            <span class="security-pill medium">Monitored</span>
+                        </div>
+                        <div class="metric-value">{{ decoy_files|length }}</div>
+                        <p class="metric-note">All interactions are logged and reported for threat intelligence.</p>
+                    </div>
+                    <div class="overview-card">
+                        <div class="metric-title">
+                            <span>Session Risk</span>
+                            <span class="security-pill high">Elevated</span>
+                        </div>
+                        <div class="metric-value">72%</div>
+                        <p class="metric-note">The current session is treated as a deception event with restricted asset access.</p>
+                    </div>
+                </div>
+
+                <div class="monitoring-grid">
+                    <div class="chart-panel">
+                        <h3>Fake File Access Timeline</h3>
+                        <canvas id="decoyAccessChart"></canvas>
+                    </div>
+                    <div class="status-panel">
+                        <h3>Decoy Controls</h3>
+                        <div class="status-list">
+                            <div class="status-line">
+                                <span class="label">Available file actions</span>
+                                <span class="value">Preview/Delete/Download</span>
+                            </div>
+                            <div class="status-line">
+                                <span class="label">Integrity checks</span>
+                                <span class="value">Simulated</span>
+                            </div>
+                            <div class="status-line">
+                                <span class="label">Data protection</span>
+                                <span class="value">Restricted</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="panel log-card">
+                    <div class="section-header">
+                        <h3>Decoy Vault Activity</h3>
+                        <span>Recorded interaction events from this session.</span>
+                    </div>
+                    <div class="event-list">
+                        {% for f in decoy_files %}
+                        <div class="event-item">
+                            <strong>{{ f.name }}</strong>
+                            <span class="metric-note">Simulated entry: {{ f.size }}</span>
+                            <time>Captured by deception engine</time>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script type="application/json" id="decoyData">{{ decoy_files | tojson }}</script>
+    <script src="{{ url_for('static', filename='js/decoy.js') }}"></script>
+    <script>
+        var decoyData = [];
+        var decoyDataEl = document.getElementById('decoyData');
+        if (decoyDataEl) {
+            try {
+                decoyData = JSON.parse(decoyDataEl.textContent || '[]');
+            } catch (e) {
+                decoyData = [];
+            }
+        }
+
+        var ctx = document.getElementById('decoyAccessChart');
+        if (ctx && Array.isArray(decoyData)) {
+            new Chart(ctx.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: decoyData.map(function(item) { return item.name; }),
+                    datasets: [{
+                        label: 'Fake access score',
+                        data: decoyData.map(function(item) { return item.access_score || 0; }),
+                        backgroundColor: 'rgba(62, 168, 255, 0.55)',
+                        borderRadius: 14,
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: { display: false },
+                        x: { ticks: { color: '#9aa5b1' } }
+                    },
+                    plugins: { legend: { display: false } }
+                }
+            });
+        }
+    </script>
+</body>
+</html>

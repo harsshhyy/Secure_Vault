@@ -11,31 +11,36 @@
         <div class="auth-card">
             <div class="auth-brand">
                 <div class="logo">SV</div>
-                <h1>Secure Vault</h1>
-                <p>Secure login for your encrypted files and notes.</p>
+                <div>
+                    <h1 class="auth-title">Secure Vault</h1>
+                    <p class="auth-subtitle">Enterprise-class adaptive security for your encrypted digital vault.</p>
+                </div>
             </div>
             <form action="{{ url_for('login') }}" method="post" class="auth-form">
-                <label>Username</label>
-                <input type="text" name="username" placeholder="Enter your username" required />
-                <label>Password</label>
-                <input type="password" name="password" placeholder="Enter your password" required />
-                <button type="submit" class="btn-primary">Log In</button>
+                <div class="input-group">
+                    <label for="username">Username or Email</label>
+                    <input id="username" type="text" name="username" placeholder="Enter your username or email" required />
+                </div>
+                <div class="input-group">
+                    <label for="password">Password</label>
+                    <input id="password" type="password" name="password" placeholder="Enter your password" required />
+                </div>
+                <button type="submit" class="btn-primary">Secure Sign In</button>
+                <div class="form-status">
+                    <span class="status-active">Trusted Device</span>
+                    <span>AI Monitoring Enabled</span>
+                </div>
             </form>
-            <p class="auth-footer">
-                <a href="{{ url_for('forgot_password') }}">Forgot password?</a><br>
-                Don't have an account? <a href="{{ url_for('register') }}">Register now</a>
-            </p>
-            <div style="font-size: 0.85em; color: #666; margin-top: 20px; padding-top: 20px; border-top: 1px solid #ddd;">
-                <strong>🔐 Secure Login:</strong>
-                <ul style="margin: 10px 0; padding-left: 20px;">
-                    <li>New devices may require additional verification</li>
-                    <li>You'll be asked for 2FA if unusual activity is detected</li>
-                    <li>Your login is protected by risk-based authentication</li>
-                </ul>
+            <div class="form-note">
+                <p>Security status</p>
+                <div class="status-pill secure">Secure connection</div>
+                <div class="status-pill alert">Risk-adaptive authentication active</div>
+            </div>
+            <div class="form-note" style="margin-top:1rem;">
+                <a href="{{ url_for('forgot_password') }}">Forgot password?</a> • <a href="{{ url_for('register') }}">Register an account</a>
             </div>
         </div>
     </div>
-    
     <script src="{{ url_for('static', filename='js/device_fingerprint.js') }}"></script>
 </body>
 </html>

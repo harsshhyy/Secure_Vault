@@ -7,54 +7,199 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body>
+<body class="dashboard-page">
     <div class="app-shell">
         <aside class="sidebar">
             <div class="brand">
                 <div class="logo">SV</div>
                 <div>
                     <h1>Secure Vault</h1>
-                    <p>Secure file & note manager</p>
+                    <p>Adaptive cybersecurity command center</p>
                 </div>
             </div>
+
             <nav class="nav-menu">
-                <a href="{{ url_for('dashboard') }}" class="nav-link {% if not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active %}active{% endif %}">Profile</a>
-                <a href="{{ url_for('documents') }}" class="nav-link {% if documents_active %}active{% endif %}">My Documents</a>
-                <a href="{{ url_for('secure_shares') }}" class="nav-link {% if secure_shares_active %}active{% endif %}">Secure Shares</a>
-                <a href="{{ url_for('activity_logs') }}" class="nav-link {% if activity_active %}active{% endif %}">Activity Logs</a>
-                <a href="{{ url_for('trust_dashboard') }}" class="nav-link {% if trust_dashboard_active %}active{% endif %}">Trust Dashboard</a>
-                <a href="{{ url_for('vault_settings') }}" class="nav-link {% if vault_settings_active %}active{% endif %}">Vault Settings</a>
+                <a href="{{ url_for('dashboard') }}" class="nav-link {% if not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active %}active{% endif %}">
+                    <span class="nav-icon">🏠</span>
+                    Dashboard
+                </a>
+                <a href="{{ url_for('documents') }}" class="nav-link {% if documents_active %}active{% endif %}">
+                    <span class="nav-icon">🛡️</span>
+                    Secure Vault
+                </a>
+                <a href="{{ url_for('activity_logs') }}" class="nav-link {% if activity_active %}active{% endif %}">
+                    <span class="nav-icon">⚠️</span>
+                    Threat Center
+                </a>
+                <a href="{{ url_for('trust_dashboard') }}" class="nav-link {% if trust_dashboard_active %}active{% endif %}">
+                    <span class="nav-icon">📈</span>
+                    Behavioral Analytics
+                </a>
+                <a href="{{ url_for('secure_shares') }}" class="nav-link {% if secure_shares_active %}active{% endif %}">
+                    <span class="nav-icon">🔗</span>
+                    Secure Shares
+                </a>
+                <a href="{{ url_for('vault_settings') }}" class="nav-link {% if vault_settings_active %}active{% endif %}">
+                    <span class="nav-icon">⚙️</span>
+                    Security Settings
+                </a>
+                <a href="{{ url_for('profile') }}" class="nav-link {% if profile_active %}active{% endif %}">
+                    <span class="nav-icon">👤</span>
+                    User Profile
+                </a>
             </nav>
+
             <div class="sidebar-footer">
-                <span>Logged in as</span>
+                <div class="status-block">
+                    <small>Security posture</small>
+                    <span class="security-pill {% if security_overview.risk_level == 'High' or security_overview.risk_level == 'Critical' %}high{% elif security_overview.risk_level == 'Medium' %}medium{% else %}low{% endif %}">
+                        {{ security_overview.risk_level | default('Stable') }}
+                    </span>
+                </div>
+                <span>Signed in as</span>
                 <strong>{{ user.username }}</strong>
-                <a href="{{ url_for('logout') }}" class="btn-logout">Logout</a>
+                <a href="{{ url_for('logout') }}" class="btn-utility">Logout</a>
             </div>
         </aside>
 
         <main class="content-area">
             <header class="topbar">
                 <div>
+                    <p class="eyebrow">Security Operations</p>
                     <h2>Welcome back, {{ user.name or user.username }}</h2>
-                    <p class="subtitle">Secure Vault dashboard and security center.</p>
+                    <p class="subtitle">AI-backed behavioral monitoring, adaptive authentication, and real-time threat intelligence.</p>
                 </div>
-                <div class="trust-panel" id="trust-panel">
-                    <span>Trust Score:</span>
-                    <strong id="trustScore">--</strong>
-                    <span id="trustLabel">Monitoring...</span>
-                    <button id="testAnomalyBtn" style="margin-left: 1rem; background: var(--danger); color: #0d1117; border: none; border-radius: 8px; padding: 0.5rem 1rem; cursor: pointer;">Test Anomaly</button>
+                <div class="topbar-actions">
+                    <div class="mini-card">
+                        <span>Current risk</span>
+                        <strong>{{ security_overview.current_risk_score | default('--') }}%</strong>
+                    </div>
+                    <div class="mini-card">
+                        <span>Active sessions</span>
+                        <strong>{{ security_overview.active_sessions | default(1) }}</strong>
+                    </div>
                 </div>
             </header>
 
             <section class="page-content">
-                {% if profile_active or (not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active) %}
+                {% if not profile_active and not documents_active and not secure_shares_active and not activity_active and not vault_settings_active and not notes_active and not trust_dashboard_active %}
+                <section class="overview-grid">
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Trust Score</span>
+                            <span class="security-pill {% if security_overview.trust_score >= 80 %}low{% elif security_overview.trust_score >= 60 %}medium{% else %}high{% endif %}">
+                                {{ security_overview.trust_score | default('N/A') }}
+                            </span>
+                        </div>
+                        <div class="metric-value">{{ security_overview.trust_score | default('--') }}</div>
+                        <p class="metric-note">Overall behavioral trust score from continuous session monitoring.</p>
+                    </article>
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Threat Level</span>
+                            <span class="security-pill {% if security_overview.risk_level == 'High' or security_overview.risk_level == 'Critical' %}high{% elif security_overview.risk_level == 'Medium' %}medium{% else %}low{% endif %}">
+                                {{ security_overview.risk_level | default('Stable') }}
+                            </span>
+                        </div>
+                        <div class="metric-value">{{ security_overview.current_risk_score | default('--') }}%</div>
+                        <p class="metric-note">Real-time risk from login and behavior analysis.</p>
+                    </article>
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Behavioral match</span>
+                            <span class="security-pill low">{{ security_overview.behavior_match | default('--') }}%</span>
+                        </div>
+                        <div class="metric-value">{{ security_overview.behavior_match | default('--') }}%</div>
+                        <p class="metric-note">How closely current activity matches your historical behavior.</p>
+                    </article>
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Device Trust</span>
+                            <span class="security-pill {% if security_overview.device_trust_status == 'Trusted' %}low{% else %}medium{% endif %}">
+                                {{ security_overview.device_trust_status | default('Unknown') }}
+                            </span>
+                        </div>
+                        <div class="metric-value">{{ security_overview.trusted_device_count | default(0) }}</div>
+                        <p class="metric-note">Trusted endpoints associated with your account.</p>
+                    </article>
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Vault encryption</span>
+                            <span class="security-pill low">{{ security_overview.encryption_status | default('Active') }}</span>
+                        </div>
+                        <div class="metric-value">AES-256</div>
+                        <p class="metric-note">All file uploads are encrypted and protected at rest.</p>
+                    </article>
+                    <article class="overview-card">
+                        <div class="metric-title">
+                            <span>Active sessions</span>
+                            <span class="security-pill low">Live</span>
+                        </div>
+                        <div class="metric-value">{{ security_overview.active_sessions | default(1) }}</div>
+                        <p class="metric-note">Current authenticated sessions across devices.</p>
+                    </article>
+                </section>
+
+                <section class="monitoring-grid">
+                    <div class="chart-panel">
+                        <h3>Risk score trend</h3>
+                        <canvas id="riskTrendChart"></canvas>
+                    </div>
+                    <div class="chart-panel">
+                        <h3>Behavioral consistency</h3>
+                        <canvas id="behaviorTrendChart"></canvas>
+                    </div>
+                </section>
+
+                <section class="split-grid">
+                    <div class="panel log-card">
+                        <div class="section-header">
+                            <h3>Recent security activity</h3>
+                            <span>Latest events from the behavioral engine.</span>
+                        </div>
+                        <div class="event-list">
+                            {% if recent_logs %}
+                                {% for log in recent_logs %}
+                                <div class="event-item">
+                                    <strong>{{ log.action }}</strong>
+                                    <span>{{ log.details }}</span>
+                                    <time>{{ log.timestamp }}</time>
+                                </div>
+                                {% endfor %}
+                            {% else %}
+                                <p class="empty-state">No recent events have been recorded.</p>
+                            {% endif %}
+                        </div>
+                    </div>
+
+                    <aside class="assistant-panel">
+                        <div class="assistant-header">
+                            <div>
+                                <h3 class="assistant-title">AI Security Assistant</h3>
+                                <p class="metric-note">Ask about recent risks, detections, or suspicious activity.</p>
+                            </div>
+                            <span class="security-pill medium">AI Copilot</span>
+                        </div>
+                        <div class="assistant-body">
+                            <textarea id="aiQuery" placeholder="Ask: What caused the latest anomaly?"></textarea>
+                            <div class="button-row" style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                                <button id="aiAsk" class="btn-primary">Ask the assistant</button>
+                                <button id="aiClear" class="btn-secondary">Clear</button>
+                            </div>
+                            <div id="aiResponse" class="metric-note" style="min-height: 100px;"></div>
+                        </div>
+                    </aside>
+                </section>
+                {% endif %}
+
+                {% if profile_active %}
                 <div class="panel">
                     <div class="section-header">
-                        <h3>Profile</h3>
-                        <span>Manage your account and security settings.</span>
+                        <h3>User Profile</h3>
+                        <span>Compact account summary and identity status.</span>
                     </div>
                     <div class="grid-two">
-                        <div class="card summary-card">
+                        <div class="summary-card">
                             <div class="profile-meta">
                                 <div class="avatar">{{ user.username[0]|upper }}</div>
                                 <div>
@@ -62,37 +207,26 @@
                                     <p>{{ user.email }}</p>
                                 </div>
                             </div>
-                            <div class="stats-row">
-                                <div>
-                                    <span>Total files</span>
-                                    <strong>{{ total_files }}</strong>
-                                </div>
-                                <div>
-                                    <span>Total notes</span>
-                                    <strong>{{ total_notes }}</strong>
-                                </div>
-                            </div>
-                            <div class="recent-logs-card">
-                                <h4>Recent Activity</h4>
-                                {% if recent_logs %}
-                                <ul>
-                                    {% for log in recent_logs %}
-                                    <li><strong>{{ log.action }}</strong> — {{ log.details }} <span>{{ log.timestamp }}</span></li>
-                                    {% endfor %}
-                                </ul>
-                                {% else %}
-                                <p class="empty-state">No recent activity yet.</p>
-                                {% endif %}
+                            <div class="status-list">
+                                <div class="status-line"><span class="label">Last login</span><span class="value">{{ security_overview.last_login | default('Unknown') }}</span></div>
+                                <div class="status-line"><span class="label">IP address</span><span class="value">{{ security_overview.last_login_ip | default('Unknown') }}</span></div>
+                                <div class="status-line"><span class="label">Trust score</span><span class="value">{{ security_overview.trust_score | default('--') }}</span></div>
                             </div>
                         </div>
                         <div class="card form-card">
                             <form action="{{ url_for('profile') }}" method="post" enctype="multipart/form-data">
-                                <label>Name</label>
-                                <input type="text" name="name" value="{{ user.name }}" placeholder="Full name" />
-                                <label>Email</label>
-                                <input type="email" name="email" value="{{ user.email }}" placeholder="Email address" />
-                                <label>Profile Picture</label>
-                                <input type="file" name="profile_picture" accept="image/*" />
+                                <div class="input-group">
+                                    <label>Name</label>
+                                    <input type="text" name="name" value="{{ user.name }}" placeholder="Full name" />
+                                </div>
+                                <div class="input-group">
+                                    <label>Email</label>
+                                    <input type="email" name="email" value="{{ user.email }}" placeholder="Email address" />
+                                </div>
+                                <div class="input-group">
+                                    <label>Profile Picture</label>
+                                    <input type="file" name="profile_picture" accept="image/*" />
+                                </div>
                                 <button type="submit" class="btn-primary">Update Profile</button>
                             </form>
                         </div>
@@ -189,8 +323,6 @@
                         </div>
                         <a href="{{ url_for('activity_logs', export='csv') }}" class="btn-secondary">Export CSV</a>
                     </div>
-                    
-                    <!-- Filters -->
                     <div class="filters-section" style="margin-bottom: 2rem; padding: 1rem; background: var(--bg-secondary); border-radius: 8px;">
                         <form method="GET" style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
                             <div>
@@ -221,8 +353,6 @@
                             <a href="{{ url_for('activity_logs') }}" class="btn-secondary">Clear</a>
                         </form>
                     </div>
-
-                    <!-- Charts -->
                     <div class="charts-section" style="margin-bottom: 2rem;">
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem;">
                             <div class="card">
@@ -235,7 +365,6 @@
                             </div>
                         </div>
                     </div>
-
                     <div class="card table-card">
                         <table>
                             <thead>
@@ -389,132 +518,180 @@
         </main>
     </div>
 
-{% if activity_active and chart_data %}
-<script type="application/json" id="activityChartData">
-{{ chart_data | tojson }}
-</script>
-{% endif %}
+    {% if activity_active and chart_data %}
+    <script type="application/json" id="activityChartData">
+    {{ chart_data | tojson }}
+    </script>
+    {% endif %}
 
-{% if trust_dashboard_active and trust_scores %}
-<script type="application/json" id="trustScoreData">
-{{ trust_scores | tojson }}
-</script>
-{% endif %}
+    {% if trust_dashboard_active and trust_scores %}
+    <script type="application/json" id="trustScoreData">
+    {{ trust_scores | tojson }}
+    </script>
+    {% endif %}
 
-<script src="{{ url_for('static', filename='js/behaviour.js') }}"></script>
+    <script type="application/json" id="recentLogsData">
+    {{ recent_logs | default([]) | tojson }}
+    </script>
 
-<script>
-    document.addEventListener('DOMContentLoaded', function() {
-        // Load activity chart data
-        const activityDataEl = document.getElementById('activityChartData');
-        if (activityDataEl) {
-            try {
-                const activityChartData = JSON.parse(activityDataEl.textContent);
-                const actionsData = activityChartData.actions;
-                const dailyData = activityChartData.daily;
-                
-                // Actions Chart
-                const actionsCtx = document.getElementById('actionsChart');
-                if (actionsCtx) {
-                    new Chart(actionsCtx.getContext('2d'), {
-                        type: 'pie',
-                        data: {
-                            labels: actionsData.map(item => item.action),
-                            datasets: [{
-                                data: actionsData.map(item => item.count),
-                                backgroundColor: [
-                                    '#ff6384', '#36a2eb', '#cc65fe', '#ffce56', '#4bc0c0', '#ff9f40'
-                                ]
-                            }]
+    <script src="{{ url_for('static', filename='js/behaviour.js') }}"></script>
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const recentLogsEl = document.getElementById('recentLogsData');
+            const recentLogs = recentLogsEl ? JSON.parse(recentLogsEl.textContent) : [];
+
+            const trustPoints = recentLogs
+                .filter(log => log.trust_score !== null && log.trust_score !== undefined)
+                .map(log => ({
+                    label: new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                    value: log.trust_score
+                }));
+
+            const behaviorBars = recentLogs.map(log => ({
+                label: log.action,
+                value: log.trust_score || 0
+            }));
+
+            if (document.getElementById('riskTrendChart')) {
+                new Chart(document.getElementById('riskTrendChart').getContext('2d'), {
+                    type: 'line',
+                    data: {
+                        labels: trustPoints.map(point => point.label),
+                        datasets: [{
+                            label: 'Trust Score',
+                            data: trustPoints.map(point => point.value),
+                            borderColor: '#43d9a1',
+                            backgroundColor: 'rgba(67,217,161,0.15)',
+                            tension: 0.3,
+                            fill: true,
+                            pointRadius: 3,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: { beginAtZero: true, max: 100 }
                         },
-                        options: {
-                            responsive: true,
-                            plugins: {
-                                legend: {
-                                    position: 'bottom',
-                                }
-                            }
-                        }
-                    });
-                }
-                
-                // Daily Activity Chart
-                const dailyCtx = document.getElementById('dailyChart');
-                if (dailyCtx) {
-                    new Chart(dailyCtx.getContext('2d'), {
-                        type: 'line',
-                        data: {
-                            labels: dailyData.map(item => item.date),
-                            datasets: [{
-                                label: 'Activity Count',
-                                data: dailyData.map(item => item.count),
-                                borderColor: '#36a2eb',
-                                backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                                tension: 0.1
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            scales: {
-                                y: {
-                                    beginAtZero: true
-                                }
-                            }
-                        }
-                    });
-                }
-            } catch (e) {
-                console.error('Failed to parse activity chart data:', e);
+                        plugins: { legend: { display: false } }
+                    }
+                });
             }
-        }
-        
-        // Load trust score chart data
-        const trustDataEl = document.getElementById('trustScoreData');
-        if (trustDataEl) {
-            try {
-                const trustScoreData = JSON.parse(trustDataEl.textContent);
-                
-                const trustCtx = document.getElementById('trustScoreChart');
-                if (trustCtx) {
-                    new Chart(trustCtx.getContext('2d'), {
-                        type: 'line',
-                        data: {
-                            labels: trustScoreData.map(item => new Date(item.timestamp).toLocaleDateString()),
-                            datasets: [{
-                                label: 'Trust Score',
-                                data: trustScoreData.map(item => item.trust_score),
-                                borderColor: '#4bc0c0',
-                                backgroundColor: 'rgba(75, 192, 192, 0.1)',
-                                tension: 0.1,
-                                pointBackgroundColor: trustScoreData.map(item => {
-                                    const score = item.trust_score;
-                                    if (score >= 80) return '#4bc0c0';
-                                    if (score >= 60) return '#ffce56';
-                                    return '#ff6384';
-                                })
-                            }]
+
+            if (document.getElementById('behaviorTrendChart')) {
+                new Chart(document.getElementById('behaviorTrendChart').getContext('2d'), {
+                    type: 'bar',
+                    data: {
+                        labels: behaviorBars.map(bar => bar.label),
+                        datasets: [{
+                            label: 'Behavior Score',
+                            data: behaviorBars.map(bar => bar.value),
+                            backgroundColor: 'rgba(62, 168, 255, 0.65)',
+                            borderRadius: 12,
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: { beginAtZero: true, max: 100 }
                         },
-                        options: {
-                            responsive: true,
-                            scales: {
-                                y: {
-                                    beginAtZero: true,
-                                    max: 100
-                                }
+                        plugins: { legend: { display: false } }
+                    }
+                });
+            }
+
+            const activityDataEl = document.getElementById('activityChartData');
+            if (activityDataEl) {
+                try {
+                    const activityChartData = JSON.parse(activityDataEl.textContent);
+                    const actionsData = activityChartData.actions;
+                    const dailyData = activityChartData.daily;
+                    const actionsCtx = document.getElementById('actionsChart');
+                    if (actionsCtx) {
+                        new Chart(actionsCtx.getContext('2d'), {
+                            type: 'doughnut',
+                            data: {
+                                labels: actionsData.map(item => item.action),
+                                datasets: [{
+                                    data: actionsData.map(item => item.count),
+                                    backgroundColor: ['#3ea8ff', '#ffb75d', '#ff6a6a', '#8e6cff', '#43d9a1']
+                                }]
                             },
-                            plugins: {
-                                legend: {
-                                    display: false
-                                }
-                            }
-                        }
-                    });
+                            options: { responsive: true, plugins: { legend: { position: 'bottom' } } }
+                        });
+                    }
+                    const dailyCtx = document.getElementById('dailyChart');
+                    if (dailyCtx) {
+                        new Chart(dailyCtx.getContext('2d'), {
+                            type: 'line',
+                            data: {
+                                labels: dailyData.map(item => item.date),
+                                datasets: [{
+                                    label: 'Events',
+                                    data: dailyData.map(item => item.count),
+                                    borderColor: '#3ea8ff',
+                                    backgroundColor: 'rgba(62,168,255,0.14)',
+                                    tension: 0.3,
+                                    fill: true,
+                                }]
+                            },
+                            options: { responsive: true, scales: { y: { beginAtZero: true } } }
+                        });
+                    }
+                } catch (e) {
+                    console.error('Failed to parse activity chart data:', e);
                 }
-            } catch (e) {
-                console.error('Failed to parse trust score data:', e);
             }
-        }
-    });
-</script>
+
+            const trustDataEl = document.getElementById('trustScoreData');
+            if (trustDataEl) {
+                try {
+                    const trustScoreData = JSON.parse(trustDataEl.textContent);
+                    const trustCtx = document.getElementById('trustScoreChart');
+                    if (trustCtx) {
+                        new Chart(trustCtx.getContext('2d'), {
+                            type: 'line',
+                            data: {
+                                labels: trustScoreData.map(item => new Date(item.timestamp).toLocaleDateString()),
+                                datasets: [{
+                                    label: 'Trust Score',
+                                    data: trustScoreData.map(item => item.trust_score),
+                                    borderColor: '#43d9a1',
+                                    backgroundColor: 'rgba(67,217,161,0.14)',
+                                    tension: 0.3,
+                                    fill: true,
+                                }]
+                            },
+                            options: {
+                                responsive: true,
+                                scales: { y: { beginAtZero: true, max: 100 } },
+                                plugins: { legend: { display: false } }
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.error('Failed to parse trust score data:', e);
+                }
+            }
+
+            document.getElementById('aiAsk')?.addEventListener('click', function() {
+                const q = document.getElementById('aiQuery').value || '';
+                if (!q.trim()) return;
+                fetch('/ai_assistant', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query: q }),
+                    credentials: 'same-origin',
+                }).then(r => r.json()).then(d => {
+                    const out = document.getElementById('aiResponse');
+                    if (!out) return;
+                    if (d.answer) out.innerHTML = '<strong>' + (d.answer || '') + '</strong><br/>' + (d.explanation ? ('<em>' + (Array.isArray(d.explanation) ? d.explanation.join('<br/>') : d.explanation) + '</em>') : (d.summary ? JSON.stringify(d.summary) : ''));
+                    else out.textContent = JSON.stringify(d);
+                }).catch(e => {
+                    const out = document.getElementById('aiResponse'); if (out) out.textContent = 'Error: ' + e;
+                });
+            });
+            document.getElementById('aiClear')?.addEventListener('click', function() { document.getElementById('aiQuery').value = ''; document.getElementById('aiResponse').textContent = ''; });
+        });
+    </script>
 </body>
 </html>

@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import secrets
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -27,6 +28,43 @@ from flask import (
     url_for,
 )
 from werkzeug.utils import secure_filename
+from security.risk_engine import calculate_session_risk
+from security.explainable import explain_behavioral_features, explain_risk_factors
+from ai_assistant import handle_query, summarize_login_attempts
+from security.decoy import trigger_decoy_for_session, log_decoy_interaction
+import numpy as np
+import sqlite3
+
+
+def make_json_safe(obj):
+    """Recursively convert common non-serializable types to JSON-safe Python types."""
+    # sqlite3.Row
+    if isinstance(obj, sqlite3.Row):
+        return dict(obj)
+    # numpy scalar
+    if isinstance(obj, np.generic):
+        return obj.item()
+    # bytes -> str
+    if isinstance(obj, (bytes, bytearray)):
+        try:
+            return obj.decode('utf-8')
+        except Exception:
+            return str(obj)
+    # dict
+    if isinstance(obj, dict):
+        return {str(k): make_json_safe(v) for k, v in obj.items()}
+    # list/tuple
+    if isinstance(obj, (list, tuple)):
+        return [make_json_safe(v) for v in obj]
+    # bool/int/float/str/None
+    if isinstance(obj, (str, int, float, bool)) or obj is None:
+        # Convert numpy.bool_ via np.generic branch above
+        return obj
+    # fallback
+    try:
+        return str(obj)
+    except Exception:
+        return None
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DATABASE_PATH = os.path.join(BASE_DIR, 'secure_vault.db')
@@ -47,6 +85,8 @@ app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_USERNAME'] = os.environ.get('MAIL_USERNAME')
 app.config['MAIL_PASSWORD'] = os.environ.get('MAIL_PASSWORD')
 app.config['MAIL_DEFAULT_SENDER'] = os.environ.get('MAIL_DEFAULT_SENDER', 'noreply@securevault.com')
+# Enable decoy/honeypot mode (toggleable)
+app.config['DECOY_ENABLED'] = True
 
 mail = Mail(app)
 
@@ -94,8 +134,12 @@ RISK_WEIGHTS = {
 def get_db():
     db = getattr(g, '_database', None)
     if db is None:
-        db = g._database = sqlite3.connect(DATABASE_PATH)
+        db = g._database = sqlite3.connect(DATABASE_PATH, timeout=30.0)
         db.row_factory = sqlite3.Row
+        # Enable WAL mode for better concurrent access
+        db.execute('PRAGMA journal_mode=WAL')
+        # Set busy timeout to 30 seconds
+        db.execute('PRAGMA busy_timeout=30000')
     return db
 
 
@@ -106,17 +150,31 @@ def query_db(query, args=(), one=False):
     return (rv[0] if rv else None) if one else rv
 
 
-def execute_db(query, args=()):
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(query, args)
-    conn.commit()
-    cur.close()
-    return cur.lastrowid
+def execute_db(query, args=(), retries=3):
+    """Execute a database query with retry logic for handling locked databases."""
+    for attempt in range(retries):
+        try:
+            conn = get_db()
+            cur = conn.cursor()
+            cur.execute(query, args)
+            conn.commit()
+            cur.close()
+            return cur.lastrowid
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e) and attempt < retries - 1:
+                wait_time = 0.1 * (2 ** attempt)  # Exponential backoff: 0.1, 0.2, 0.4 seconds
+                print(f"[DB] Database locked, retrying in {wait_time}s... (attempt {attempt + 1}/{retries})")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise
 
 
 def init_db():
     conn = sqlite3.connect(DATABASE_PATH)
+    # Enable WAL mode for better concurrent access
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA busy_timeout=30000')
     cursor = conn.cursor()
     cursor.execute(
         '''
@@ -210,6 +268,34 @@ def init_db():
         )
         '''
     )
+
+    # Decoy/honeypot tables
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS decoy_triggers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            username TEXT,
+            ip_address TEXT,
+            device_fingerprint TEXT,
+            reason TEXT,
+            risk_score INTEGER,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
+
+    cursor.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS decoy_interactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT NOT NULL,
+            details TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        '''
+    )
     
     # Add columns to users table for device tracking
     try:
@@ -265,6 +351,61 @@ def get_current_user():
         return None
     user_row = query_db('SELECT * FROM users WHERE id = ?', [session['user_id']], one=True)
     return dict(user_row) if user_row else None
+
+
+def get_dashboard_overview(user):
+    if not user:
+        return {}
+
+    latest_login_row = query_db(
+        'SELECT risk_score, risk_level, timestamp FROM login_attempts WHERE user_id = ? ORDER BY timestamp DESC LIMIT 1',
+        [user['id']],
+        one=True,
+    )
+    latest_login = dict(latest_login_row) if latest_login_row else {}
+
+    avg_trust_row = query_db(
+        'SELECT AVG(trust_score) AS avg_score FROM behavior_logs WHERE user_id = ? AND trust_score IS NOT NULL',
+        [user['id']],
+        one=True,
+    )
+    avg_trust = dict(avg_trust_row)['avg_score'] if avg_trust_row and dict(avg_trust_row)['avg_score'] is not None else None
+
+    anomaly_count_row = query_db(
+        'SELECT COUNT(*) AS count FROM behavior_logs WHERE user_id = ? AND is_anomaly = 1',
+        [user['id']],
+        one=True,
+    )
+    anomaly_count = dict(anomaly_count_row)['count'] if anomaly_count_row else 0
+
+    trusted_devices = user.get('trusted_devices')
+    trusted_count = 0
+    if trusted_devices:
+        try:
+            trusted_devices_list = json.loads(trusted_devices) if isinstance(trusted_devices, str) else trusted_devices
+            trusted_count = len(trusted_devices_list) if isinstance(trusted_devices_list, (list, tuple)) else 1
+        except Exception:
+            trusted_count = 1
+
+    return {
+        'trust_score': int(round(avg_trust)) if avg_trust is not None else None,
+        'behavior_match': int(round(avg_trust)) if avg_trust is not None else None,
+        'current_risk_score': latest_login.get('risk_score'),
+        'risk_level': latest_login.get('risk_level') or 'Stable',
+        'active_sessions': trusted_count or 1,
+        'device_trust_status': 'Trusted' if trusted_count else 'Unverified',
+        'encryption_status': 'Active',
+        'anomaly_count': anomaly_count,
+        'last_login': user.get('last_successful_login') or user.get('created_at'),
+        'last_login_ip': user.get('last_login_ip') or 'Unknown',
+        'trusted_device_count': trusted_count,
+    }
+
+
+@app.context_processor
+def inject_security_overview():
+    user = get_current_user()
+    return {'security_overview': get_dashboard_overview(user)} if user else {}
 
 
 def login_required(f):
@@ -611,11 +752,20 @@ def login():
 
         # Step 3: Handle based on risk level
         if risk_level == 'high':
-            # HIGH RISK: Block login and send alert
+            # HIGH RISK: Either block or divert to decoy vault for monitoring
             print(f"[ALERT] High-risk login attempt for user {username} (score: {risk_score})")
             record_login_attempt(user.get('id'), username, ip_address, risk_score, risk_level, risk_factors, success=False)
-            
-            # Send security alert email
+
+            # If decoy is enabled, redirect the session to a decoy vault to monitor attacker behavior
+            if app.config.get('DECOY_ENABLED'):
+                try:
+                    trigger_decoy_for_session(user.get('id'), username, ip_address, device_fingerprint, 'high_risk_login', risk_score)
+                except Exception as e:
+                    print(f"[ERROR] Failed to trigger decoy: {e}")
+                flash('Your session is under additional review.', 'warning')
+                return redirect(url_for('decoy_vault'))
+
+            # Fallback: send security alert email and block
             try:
                 msg = Message('Security Alert: Blocked Login Attempt', recipients=[user.get('email', '')])
                 msg.body = f'''Dear {user.get('username', 'User')},
@@ -639,7 +789,7 @@ Secure Vault Security Team'''
                 print(f"[EMAIL] Security alert sent to {user.get('email', '')}")
             except Exception as e:
                 print(f"[ERROR] Failed to send alert email: {e}")
-            
+
             flash('Login blocked due to unusual activity. Please try again later.', 'danger')
             return redirect(url_for('login'))
 
@@ -734,8 +884,8 @@ def verify_otp_login():
                   [temp_login['ip_address'], datetime.utcnow().isoformat(), user_id])
         
         # Record successful login
-        execute_db('INSERT INTO login_attempts (user_id, ip_address, success, timestamp) VALUES (?, ?, ?, ?)',
-                  [user_id, temp_login['ip_address'], 1, datetime.utcnow().isoformat()])
+        execute_db('INSERT INTO login_attempts (user_id, username, ip_address, success, timestamp) VALUES (?, ?, ?, ?, ?)',
+                  [user_id, temp_login['username'], temp_login['ip_address'], 1, datetime.utcnow().isoformat()])
         
         flash('Login successful. 2FA not configured on your account.', 'info')
         return redirect(url_for('dashboard'))
@@ -806,7 +956,8 @@ def dashboard():
     total_files = dict(total_files_row)['count'] if total_files_row else 0
     total_notes_row = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)
     total_notes = dict(total_notes_row)['count'] if total_notes_row else 0
-    recent_logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
+    recent_logs_rows = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
+    recent_logs = [dict(row) for row in recent_logs_rows] if recent_logs_rows else []
 
     return render_template(
         'dashboard.html',
@@ -841,7 +992,8 @@ def profile():
     total_files = dict(total_files_row)['count'] if total_files_row else 0
     total_notes_row = query_db('SELECT COUNT(*) AS count FROM notes WHERE user_id = ?', [user['id']], one=True)
     total_notes = dict(total_notes_row)['count'] if total_notes_row else 0
-    recent_logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
+    recent_logs_rows = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 5', [user['id']])
+    recent_logs = [dict(row) for row in recent_logs_rows] if recent_logs_rows else []
     return render_template('dashboard.html', user=user, profile_active=True, total_files=total_files, total_notes=total_notes, recent_logs=recent_logs)
 
 
@@ -1154,24 +1306,65 @@ def log_behavior():
                     user['username'],
                     f"Anomalous behavior detected: {method} (Trust score: {trust_score}/100)"
                 )
+
+                # If decoy mode enabled, divert the session into the decoy vault for monitoring
+                if app.config.get('DECOY_ENABLED'):
+                    try:
+                        trigger_decoy_for_session(user['id'], user.get('username', ''), request.remote_addr, session.get('device_fingerprint'), f'anomaly_{method}', trust_score)
+                    except Exception as e:
+                        print(f"[ERROR] Failed to trigger decoy: {e}")
+                    return jsonify(make_json_safe({
+                        'status': 'decoy',
+                        'trustScore': 0,
+                        'anomaly': True,
+                        'method': method,
+                        'redirect': url_for('decoy_vault')
+                    })), 200
+
+                # default: terminate session
                 session.clear()
-                return jsonify({
+                try:
+                    risk_score, risk_level, risk_factors = calculate_session_risk(user, request.remote_addr, session.get('device_fingerprint'), feature_vector, recent_failures=0)
+                except Exception:
+                    risk_score, risk_level, risk_factors = 100, 'high', {'anomaly': 'ml_detected'}
+                return jsonify(make_json_safe({
                     'status': 'logout',
                     'trustScore': 0,
                     'anomaly': True,
                     'method': method,
+                    'riskScore': risk_score,
+                    'riskLevel': risk_level,
+                    'riskFactors': risk_factors,
                     'message': 'Anomalous behavior detected. Session terminated for security.'
-                }), 401
+                })), 401
         else:
             # No feature vector, just record the action
             record_behavior(user['id'], action, details, trust_score=trust_score)
-        
-        return jsonify({
+
+        # After recording behavior, compute lightweight session risk to return to client
+        try:
+            recent_failures_row = query_db('SELECT COUNT(*) as count FROM login_attempts WHERE user_id = ? AND success = 0 AND timestamp > datetime("now", "-30 minutes")', [user['id']], one=True)
+            recent_failures = int(dict(recent_failures_row)['count']) if recent_failures_row else 0
+        except Exception:
+            recent_failures = 0
+
+        try:
+            risk_score, risk_level, risk_factors = calculate_session_risk(user, request.remote_addr, session.get('device_fingerprint'), feature_vector, recent_failures=recent_failures)
+        except Exception:
+            risk_score, risk_level, risk_factors = 50, 'medium', {}
+
+        explanation = explain_behavioral_features(feature_vector) if feature_vector else []
+
+        return jsonify(make_json_safe({
             'status': 'ok',
             'trustScore': trust_score,
             'anomaly': anomaly_detected,
-            'method': detection_method
-        })
+            'method': detection_method,
+            'riskScore': risk_score,
+            'riskLevel': risk_level,
+            'riskFactors': risk_factors,
+            'explanation': explanation,
+        }))
 
     # GET request: return behavior logs with parsed features
     logs = query_db('SELECT * FROM behavior_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100', [user['id']])
@@ -1186,6 +1379,119 @@ def log_behavior():
                 pass
         logs_list.append(log_dict)
     return jsonify(logs_list)
+
+
+
+@app.route('/session_risk', methods=['POST'])
+@login_required
+def session_risk():
+    """API endpoint to calculate session risk for the active user.
+    Accepts optional JSON: { featureVector: [...], deviceFingerprint: '...' }
+    """
+    user = get_current_user()
+    payload = request.get_json(force=True, silent=True) or {}
+    feature_vector = payload.get('featureVector', [])
+    device_fingerprint = payload.get('deviceFingerprint') or session.get('device_fingerprint')
+
+    try:
+        recent_failures_row = query_db('SELECT COUNT(*) as count FROM login_attempts WHERE user_id = ? AND success = 0 AND timestamp > datetime("now", "-30 minutes")', [user['id']], one=True)
+        recent_failures = int(dict(recent_failures_row)['count']) if recent_failures_row else 0
+    except Exception:
+        recent_failures = 0
+
+    risk_score, risk_level, risk_factors = calculate_session_risk(user, request.remote_addr, device_fingerprint, feature_vector, recent_failures=recent_failures)
+
+    explanation = explain_behavioral_features(feature_vector) if feature_vector else []
+
+    return jsonify(make_json_safe({
+        'riskScore': risk_score,
+        'riskLevel': risk_level,
+        'riskFactors': risk_factors,
+        'explanation': explanation,
+    }))
+
+
+
+@app.route('/ai_assistant', methods=['POST'])
+@login_required
+def ai_assistant_endpoint():
+    """Very small assistant for security-related queries.
+    POST JSON: { query: 'Why was my login blocked?' }
+    """
+    user = get_current_user()
+    payload = request.get_json(force=True, silent=True) or {}
+    query_text = payload.get('query', '')
+
+    # Gather recent login attempts for context
+    attempts_rows = query_db('SELECT * FROM login_attempts WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50', [user['id']])
+    attempts = [dict(r) for r in attempts_rows] if attempts_rows else []
+
+    result = handle_query(query_text, {'attempts': attempts})
+    return jsonify(make_json_safe(result))
+
+
+
+@app.route('/decoy_vault')
+def decoy_vault():
+    """Render the decoy/honeypot vault UI for suspicious sessions."""
+    # Provide a set of believable fake files
+    decoy_files = [
+        {'name': 'confidential_records.pdf', 'size': '2.3 MB', 'access_score': 84},
+        {'name': 'wallet_backup.txt', 'size': '1.1 KB', 'access_score': 62},
+        {'name': 'financial_data.zip', 'size': '12.4 MB', 'access_score': 91},
+        {'name': 'passwords.docx', 'size': '45 KB', 'access_score': 73},
+        {'name': 'server_keys.pem', 'size': '3.2 KB', 'access_score': 56},
+    ]
+    # Mark in behavior logs
+    uid = session.get('user_id')
+    if uid:
+        record_behavior(uid, 'decoy_enter', f'Entered decoy vault')
+    return render_template('decoy.html', decoy_files=decoy_files)
+
+
+@app.route('/decoy_event', methods=['POST'])
+def decoy_event():
+    """Receive and log interactions inside the decoy vault."""
+    payload = request.get_json(force=True, silent=True) or {}
+    action = payload.get('action', 'view')
+    details = payload.get('details', '')
+    user_id = session.get('user_id')
+    try:
+        # log into decoy_interactions table
+        log_decoy_interaction(user_id, action, details)
+        # also record general behavior log for correlation
+        if user_id:
+            record_behavior(user_id, f'decoy_{action}', details)
+    except Exception as e:
+        print(f"[ERROR] decoy_event logging failed: {e}")
+    return jsonify(make_json_safe({'status': 'ok'}))
+
+
+@app.route('/trust_device', methods=['POST'])
+@login_required
+def trust_device():
+    """Mark current device fingerprint as trusted for the user.
+    POST JSON: { deviceFingerprint: '...' }
+    """
+    user = get_current_user()
+    payload = request.get_json(force=True, silent=True) or {}
+    fp = payload.get('deviceFingerprint') or session.get('device_fingerprint')
+    if not fp:
+        return jsonify({'status': 'error', 'message': 'No device fingerprint provided.'}), 400
+
+    trusted = []
+    if user.get('trusted_devices'):
+        try:
+            trusted = json.loads(user.get('trusted_devices') or '[]')
+        except Exception:
+            trusted = []
+
+    if fp not in trusted:
+        trusted.append(fp)
+        execute_db('UPDATE users SET trusted_devices = ? WHERE id = ?', [json.dumps(trusted[:20]), user['id']])
+        record_behavior(user['id'], 'trust_device', f'Added trusted device {fp}')
+
+    return jsonify(make_json_safe({'status': 'ok', 'trusted_devices': trusted}))
 
 
 @app.route('/reset_password/<token>', methods=['GET', 'POST'])
